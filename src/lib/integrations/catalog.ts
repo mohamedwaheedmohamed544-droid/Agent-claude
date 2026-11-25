@@ -90,7 +90,7 @@ async function oauthEntries(workspaceId: string, origin?: string): Promise<Integ
   });
 }
 
-async function openAiEntries(): Promise<IntegrationInfo[]> {
+async function aiEntries(): Promise<IntegrationInfo[]> {
   const configured = isAiConfigured();
   let status: IntegrationInfo["status"] = configured ? "available" : "not_configured";
   let lastError: string | null = null;
@@ -103,21 +103,21 @@ async function openAiEntries(): Promise<IntegrationInfo[]> {
     else if (primary && primary.available === false) { status = "error"; lastError = `Configured primary model "${primary.model}" is not available to this API key`; }
     else status = "connected";
   }
-  const mode = configured ? (isMockMode() ? "mock" : "openai") : null;
+  const mode = configured ? (isMockMode() ? "mock" : "anthropic") : null;
   return [
     {
-      provider: "openai", kind: "builtin", name: "OpenAI", description: "Language models for every agent, embeddings for knowledge search.",
+      provider: "anthropic", kind: "builtin", name: "Anthropic Claude", description: "Claude models power the orchestrator and every agent; optional Voyage AI embeddings power semantic search.",
       configured, status, accountLabel: null, scopes: [], connectedAt: null, lastError,
-      capabilities: ["llm.chat", "llm.tools", "embeddings"], tools: [],
-      setup: { envVars: ["OPENAI_API_KEY", "OPENAI_MODEL"], missingEnv: ["OPENAI_API_KEY", "OPENAI_MODEL"].filter((k) => !process.env[k]?.trim()), optionalEnv: [] },
+      capabilities: ["llm.chat", "llm.tools", ...(process.env.VOYAGE_API_KEY ? ["embeddings"] : [])], tools: [],
+      setup: { envVars: ["ANTHROPIC_API_KEY"], missingEnv: ["ANTHROPIC_API_KEY"].filter((k) => !process.env[k]?.trim()), optionalEnv: ["ANTHROPIC_MODEL", "ANTHROPIC_FALLBACK_MODEL", "VOYAGE_API_KEY"] },
       details: { mode, models },
     },
     {
-      provider: "web_search", kind: "builtin", name: "Web search", description: "Live web search with cited sources, served through the OpenAI API.",
+      provider: "web_search", kind: "builtin", name: "Web search", description: "Live web search with cited sources, served by Claude's web search tool.",
       configured, status: configured ? (status === "error" ? "error" : "available") : "not_configured", accountLabel: null, scopes: [], connectedAt: null,
       lastError: status === "error" ? lastError : null,
       capabilities: ["web.search", "web.fetch"], tools: toolRefs(["web_search", "fetch_url"]),
-      setup: { envVars: ["OPENAI_API_KEY"], missingEnv: ["OPENAI_API_KEY"].filter((k) => !process.env[k]?.trim()), optionalEnv: [] },
+      setup: { envVars: ["ANTHROPIC_API_KEY"], missingEnv: ["ANTHROPIC_API_KEY"].filter((k) => !process.env[k]?.trim()), optionalEnv: [] },
     },
   ];
 }
@@ -157,6 +157,6 @@ function webhookEntry(): IntegrationInfo {
 }
 
 export async function listIntegrationCatalog(workspaceId: string, origin?: string): Promise<IntegrationInfo[]> {
-  const [oauth, ai, db] = await Promise.all([oauthEntries(workspaceId, origin), openAiEntries(), databaseEntry()]);
+  const [oauth, ai, db] = await Promise.all([oauthEntries(workspaceId, origin), aiEntries(), databaseEntry()]);
   return [...oauth, ...ai, db, webhookEntry()];
 }

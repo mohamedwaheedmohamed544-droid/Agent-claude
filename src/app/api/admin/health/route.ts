@@ -30,11 +30,11 @@ export const GET = workspaceRoute(async ({ req, workspaceId }) => {
   const env = (k: string) => Boolean(process.env[k]);
   return {
     database: { ok: true, latencyMs: dbLatency, ...db },
-    ai: { mode: isMockMode() ? "mock" : "openai", ...models },
+    ai: { mode: isMockMode() ? "mock" : "anthropic", ...models },
     queue,
     recentServerErrors: errors,
     configuration: {
-      OPENAI_API_KEY: env("OPENAI_API_KEY"), OPENAI_MODEL: env("OPENAI_MODEL"), OPENAI_FALLBACK_MODEL: env("OPENAI_FALLBACK_MODEL"),
+      ANTHROPIC_API_KEY: env("ANTHROPIC_API_KEY"), ANTHROPIC_MODEL: env("ANTHROPIC_MODEL"), ANTHROPIC_FALLBACK_MODEL: env("ANTHROPIC_FALLBACK_MODEL"), VOYAGE_API_KEY: env("VOYAGE_API_KEY"),
       DATABASE_URL: env("DATABASE_URL"), NEXUS_ENCRYPTION_KEY: hasEncryptionKey(), CRON_SECRET: env("CRON_SECRET"),
       GOOGLE_CLIENT_ID: env("GOOGLE_CLIENT_ID"), MICROSOFT_CLIENT_ID: env("MICROSOFT_CLIENT_ID"),
     },

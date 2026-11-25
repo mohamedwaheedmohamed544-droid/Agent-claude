@@ -332,9 +332,9 @@ describe("ingestion and search", () => {
 
   it("keeps chunks and marks ready with a warning when embeddings are unavailable", async () => {
     const prev = process.env.NEXUS_LLM_PROVIDER;
-    const prevKey = process.env.OPENAI_API_KEY;
-    process.env.NEXUS_LLM_PROVIDER = "openai";
-    delete process.env.OPENAI_API_KEY;
+    const prevKey = process.env.VOYAGE_API_KEY;
+    process.env.NEXUS_LLM_PROVIDER = "anthropic";
+    delete process.env.VOYAGE_API_KEY;
     try {
       const { file } = await ingestUpload({
         workspaceId: B.workspaceId, userId: B.userId, filename: "no-embed.txt",
@@ -347,7 +347,7 @@ describe("ingestion and search", () => {
       expect(hits[0]?.fileId).toBe(file.id);
     } finally {
       process.env.NEXUS_LLM_PROVIDER = prev;
-      if (prevKey !== undefined) process.env.OPENAI_API_KEY = prevKey;
+      if (prevKey !== undefined) process.env.VOYAGE_API_KEY = prevKey;
     }
   });
 

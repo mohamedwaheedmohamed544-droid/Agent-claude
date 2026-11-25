@@ -11,18 +11,23 @@ export interface ResolvedModels {
 }
 
 /**
- * Model resolution order: workspace override → environment → (for tiers) primary.
+ * Model resolution order: workspace override → environment → default.
+ * Default is Claude Opus 5.5 for every tier; tiers differ by reasoning effort (see effortForTier),
+ * and can be pointed at other Claude models with ANTHROPIC_FAST_MODEL / ANTHROPIC_ADVANCED_MODEL.
  * Nothing is assumed to exist: verifyModelAccess() checks against the account's model list.
  */
+export const DEFAULT_MODEL = "claude-opus-5-5";
+export const DEFAULT_EMBEDDING_MODEL = "voyage-4";
+
 export function resolveModels(settings?: Pick<WorkspaceSettings, "models">): ResolvedModels {
   const m = settings?.models ?? {};
-  const primary = m.primary || process.env.OPENAI_MODEL || null;
+  const primary = m.primary || process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
   return {
     primary,
-    fallback: m.fallback || process.env.OPENAI_FALLBACK_MODEL || null,
-    fast: m.fast || process.env.OPENAI_FAST_MODEL || primary,
-    advanced: m.advanced || process.env.OPENAI_ADVANCED_MODEL || primary,
-    embedding: process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small",
+    fallback: m.fallback || process.env.ANTHROPIC_FALLBACK_MODEL || null,
+    fast: m.fast || process.env.ANTHROPIC_FAST_MODEL || primary,
+    advanced: m.advanced || process.env.ANTHROPIC_ADVANCED_MODEL || primary,
+    embedding: process.env.VOYAGE_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL,
   };
 }
 
@@ -32,20 +37,22 @@ export function modelForTier(models: ResolvedModels, tier: ModelTier): string | 
   return models.primary;
 }
 
+/** Reasoning effort per tier (Claude `output_config.effort`). */
+export function effortForTier(tier: ModelTier): "low" | "medium" | "high" {
+  return tier === "fast" ? "low" : tier === "advanced" ? "high" : "medium";
+}
+
 /** USD per 1M tokens [input, output]. Estimates only; override with NEXUS_MODEL_PRICING JSON. */
 const DEFAULT_PRICING: Array<[prefix: string, input: number, output: number]> = [
-  ["gpt-5-nano", 0.05, 0.4],
-  ["gpt-5-mini", 0.25, 2.0],
-  ["gpt-5", 1.25, 10.0],
-  ["gpt-4.1-nano", 0.1, 0.4],
-  ["gpt-4.1-mini", 0.4, 1.6],
-  ["gpt-4.1", 2.0, 8.0],
-  ["gpt-4o-mini", 0.15, 0.6],
-  ["gpt-4o", 2.5, 10.0],
-  ["o4-mini", 1.1, 4.4],
-  ["o3", 2.0, 8.0],
-  ["text-embedding-3-small", 0.02, 0],
-  ["text-embedding-3-large", 0.13, 0],
+  ["claude-fable-5-2", 8, 40],
+  ["claude-fable-5", 10, 50],
+  ["claude-opus-5-5", 4, 20],
+  ["claude-opus-5", 5, 25],
+  ["claude-opus-4", 5, 25],
+  ["claude-sonnet-5", 2, 10],
+  ["claude-sonnet-4", 3, 15],
+  ["claude-haiku-5-5", 0.1, 0.5],
+  ["claude-haiku-4-5", 1, 5],
 ];
 
 function pricingTable(): Array<[string, number, number]> {
@@ -61,12 +68,21 @@ function pricingTable(): Array<[string, number, number]> {
   return DEFAULT_PRICING;
 }
 
-export function estimateCostUsd(model: string, promptTokens: number, completionTokens: number): number {
+/**
+ * Estimated cost. Cache reads bill at ~0.1× and cache writes at ~1.25× the input rate.
+ * `extraUsd` covers server-tool fees (e.g. web search at $10 per 1,000 searches).
+ */
+export function estimateCostUsd(
+  model: string, inputTokens: number, outputTokens: number,
+  cache: { read?: number; write?: number } = {}, extraUsd = 0,
+): number {
   const entry = pricingTable()
     .filter(([p]) => model.startsWith(p))
     .sort((a, b) => b[0].length - a[0].length)[0];
-  if (!entry) return 0;
-  return (promptTokens * entry[1] + completionTokens * entry[2]) / 1_000_000;
+  if (!entry) return extraUsd;
+  const inRate = entry[1] / 1_000_000;
+  return inputTokens * inRate + (cache.read ?? 0) * inRate * 0.1 + (cache.write ?? 0) * inRate * 1.25 +
+    outputTokens * (entry[2] / 1_000_000) + extraUsd;
 }
 
 /** Rough token estimate (~4 chars/token for Latin, ~2.5 for Arabic). Used for context budgeting. */

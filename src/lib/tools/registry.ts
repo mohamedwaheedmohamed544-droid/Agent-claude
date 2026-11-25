@@ -27,8 +27,9 @@ export function toolSpecs(names: string[]): ToolSpec[] {
     .map((n) => BY_NAME.get(n))
     .filter((t): t is ToolDefinition => Boolean(t))
     .map((t) => ({
-      type: "function" as const,
-      function: { name: t.name, description: `${t.description} [risk level ${t.riskLevel}]`, parameters: toolJsonSchema(t) },
+      name: t.name,
+      description: `${t.description} [risk level ${t.riskLevel}]`,
+      input_schema: toolJsonSchema(t) as ToolSpec["input_schema"],
     }));
 }
 

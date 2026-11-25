@@ -20,7 +20,8 @@ gates every action that modifies data or reaches the outside world.
    │    definitions.ts  7 specialists + shared safety policy + orchestrator prompt
    │    store.ts        DB-backed agents with immutable versions; per-workspace overrides
    │    runner.ts       context assembly (memory + RAG + upstream outputs as untrusted data),
-   │                    tool-calling loop, checkpoint after every round (resumable)
+   │                    tool-calling loop; append-only history (thinking blocks preserved), results of a tool
+   │                    round sent back in one message; checkpoint after every call (resumable)
    │
    ├─ Tools  src/lib/tools/
    │    registry.ts     code-defined tools mirrored into tool_registry (zod → JSON schema)
@@ -30,14 +31,15 @@ gates every action that modifies data or reaches the outside world.
    │    integration-tools.ts  Gmail/Outlook/Calendar/Drive tools (OAuth)
    │
    ├─ Knowledge & memory  src/lib/knowledge/, src/lib/memory/
-   │    ingestion (PDF/DOCX/XLSX/PPTX/CSV/TXT/MD) → chunks → embeddings (pgvector, HNSW)
+   │    ingestion (PDF/DOCX/XLSX/PPTX/CSV/TXT/MD) → chunks → optional Voyage embeddings (pgvector, HNSW, 1024-d)
    │    hybrid retrieval (vector + full-text, reciprocal-rank fusion), workspace-scoped
    │    memory: user / workspace / task scopes; agent proposals inert until approved; secrets rejected
    │
-   └─ AI layer  src/lib/ai/
-        models.ts  model resolution (workspace override → env), tiers, pricing estimates, token budgeting
-        llm.ts     chat / structured JSON / embeddings / web search; fallback model; usage + cost records;
-                   daily budget; model-access verification against the account's model list
+   └─ AI layer  src/lib/ai/  (Anthropic Claude)
+        models.ts  model resolution (workspace override → env → claude-opus-5-5), tier → effort, pricing estimates
+        llm.ts     Claude Messages API (streaming, adaptive thinking, structured outputs, server-side refusal fallback,
+                   prompt caching), Claude web_search server tool, optional Voyage AI embeddings, fallback model,
+                   usage + cost records, daily budget, model-access verification via the Models API
 ```
 
 ## Task lifecycle
@@ -95,7 +97,7 @@ gates every action that modifies data or reaches the outside world.
 See `db/migrations/001_init.sql` — users, sessions, workspaces, workspace_members, agents, agent_versions,
 conversations, messages, tasks, task_steps, task_dependencies, tool_registry, tool_executions, approvals,
 audit_logs, usage_records, api_request_logs, rate_limits, integrations, oauth_states, knowledge_bases,
-knowledge_files, document_chunks, embeddings (vector(1536), HNSW), memory_items (vector), generated_artifacts,
+knowledge_files, document_chunks, embeddings (vector(1024), HNSW), memory_items (vector), generated_artifacts,
 work_items.
 
 Migrations run via `npm run db:migrate` (transactional, advisory-locked, checksum-verified). The Vercel build

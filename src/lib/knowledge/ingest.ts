@@ -147,8 +147,8 @@ export async function processFile(workspaceId: string, fileId: string, ctx: Proc
 async function embedChunks(
   workspaceId: string, fileId: string, filename: string, chunks: Array<Chunk & { id?: string }>, ctx: ProcessContext,
 ): Promise<string | null> {
-  if (!isMockMode() && !process.env.OPENAI_API_KEY) {
-    return "semantic search is unavailable because embeddings are not configured (OPENAI_API_KEY); keyword search still works";
+  if (!isMockMode() && !process.env.VOYAGE_API_KEY) {
+    return "semantic search is unavailable because embeddings are not configured (VOYAGE_API_KEY); keyword search still works";
   }
   try {
     for (let i = 0; i < chunks.length; i += EMBED_BATCH) {

@@ -531,7 +531,7 @@ describe("catalogue and helpers", () => {
     expect(g.setup!.redirectUri).toBe("https://nexus.example.com/api/integrations/google/callback");
     expect(cat.find((i) => i.provider === "microsoft")!.setup!.missingEnv).toEqual(["MICROSOFT_CLIENT_SECRET"]);
     expect(JSON.stringify(cat)).not.toContain("google-client-secret-value");
-    expect(cat.map((i) => i.provider)).toEqual(expect.arrayContaining(["openai", "web_search", "neon", "webhook"]));
+    expect(cat.map((i) => i.provider)).toEqual(expect.arrayContaining(["anthropic", "web_search", "neon", "webhook"]));
     expect(cat.find((i) => i.provider === "webhook")!.tools).toEqual([{ name: "http_post_webhook", riskLevel: 4 }]);
     expect(cat.find((i) => i.provider === "neon")!.status).toBe("connected");
   });

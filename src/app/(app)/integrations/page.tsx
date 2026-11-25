@@ -18,7 +18,7 @@ const LAYOUT: Array<{ group: Group; cards: Array<{ key: CardKey; provider?: stri
   { group: "communication", cards: [{ key: "gmail", provider: "google", service: "gmail" }, { key: "outlook", provider: "microsoft", service: "outlook" }] },
   { group: "calendar", cards: [{ key: "google_calendar", provider: "google", service: "google_calendar" }, { key: "outlook_calendar", provider: "microsoft", service: "outlook_calendar" }] },
   { group: "storage", cards: [{ key: "google_drive", provider: "google", service: "google_drive" }] },
-  { group: "ai", cards: [{ key: "openai", provider: "openai" }, { key: "web_search", provider: "web_search" }, { key: "neon", provider: "neon" }] },
+  { group: "ai", cards: [{ key: "anthropic", provider: "anthropic" }, { key: "web_search", provider: "web_search" }, { key: "neon", provider: "neon" }] },
   { group: "automation", cards: [{ key: "webhook", provider: "webhook" }, { key: "crm" }] },
 ];
 

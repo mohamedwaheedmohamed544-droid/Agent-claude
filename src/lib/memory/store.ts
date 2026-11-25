@@ -78,7 +78,7 @@ export async function searchMemory(
   try {
     const any = await queryOne("SELECT 1 FROM memory_items WHERE workspace_id=$1 AND embedding IS NOT NULL LIMIT 1", [workspaceId]);
     if (any && q.trim()) {
-      const { vectors } = await embed([q], { workspaceId, userId, purpose: "memory_retrieval" });
+      const { vectors } = await embed([q], { workspaceId, userId, purpose: "memory_retrieval" }, "query");
       return await query<MemoryItem>(
         `SELECT ${COLS}, (1 - (embedding <=> $4::vector)) * 0.8 + importance * 0.2 AS score
            FROM memory_items WHERE ${visibility} AND embedding IS NOT NULL

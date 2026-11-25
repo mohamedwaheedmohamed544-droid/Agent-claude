@@ -9,8 +9,20 @@ import { estimateTokens } from "./models";
 
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
-  if (Array.isArray(content)) return content.map((p) => (typeof p === "object" && p && "text" in p ? String((p as { text: string }).text) : "")).join(" ");
+  if (Array.isArray(content)) {
+    return content.map((p) => {
+      if (!p || typeof p !== "object") return "";
+      const b = p as { type?: string; text?: string; content?: unknown };
+      if (b.type === "text") return b.text ?? "";
+      if (b.type === "tool_result") return textOf(b.content);
+      return "";
+    }).join(" ");
+  }
   return "";
+}
+
+function isToolResultTurn(m: { role: string; content?: unknown } | undefined): boolean {
+  return Boolean(m && m.role === "user" && Array.isArray(m.content) && m.content.some((b: { type?: string }) => b?.type === "tool_result"));
 }
 
 let callCounter = 0;
@@ -56,12 +68,12 @@ function planFor(objective: string) {
 }
 
 export function mockChat(req: ChatRequest): { content: string | null; toolCalls: ToolCall[]; promptTokens: number; completionTokens: number } {
-  const allText = req.messages.map((m) => textOf((m as { content?: unknown }).content)).join("\n");
+  const allText = [req.system, ...req.messages.map((m) => textOf(m.content))].join("\n");
   const promptTokens = estimateTokens(allText);
   const done = (content: string | null, toolCalls: ToolCall[] = []) => ({
     content, toolCalls, promptTokens, completionTokens: estimateTokens(content ?? JSON.stringify(toolCalls)),
   });
-  const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
+  const lastUser = [...req.messages].reverse().find((m) => m.role === "user" && !isToolResultTurn(m));
   const userText = textOf(lastUser?.content);
 
   if (req.jsonSchema?.name === "task_plan") {
@@ -73,14 +85,14 @@ export function mockChat(req: ChatRequest): { content: string | null; toolCalls:
   if (req.jsonSchema) return done("{}");
 
   const last = req.messages[req.messages.length - 1];
-  const toolNames = new Set((req.tools ?? []).map((t) => t.function.name));
-  if (last?.role === "tool") {
-    const toolResults = req.messages.filter((m) => m.role === "tool").map((m) => textOf(m.content).slice(0, 200));
+  const toolNames = new Set((req.tools ?? []).map((t) => t.name));
+  if (isToolResultTurn(last)) {
+    const toolResults = req.messages.filter(isToolResultTurn).map((m) => textOf(m.content).slice(0, 200));
     return done(`[mock] Step complete. Based on ${toolResults.length} tool result(s): ${toolResults.join(" | ")}`);
   }
   if (req.tools?.length) {
     const step = userText.toLowerCase();
-    const call = (name: string, args: Record<string, unknown>): ToolCall => ({ id: `call_${++callCounter}`, name, arguments: JSON.stringify(args) });
+    const call = (name: string, args: Record<string, unknown>): ToolCall => ({ id: `toolu_mock_${++callCounter}`, name, input: args });
     if (step.includes("[fail]")) throw new Error("mock: simulated provider failure");
     if (step.includes("webhook") && toolNames.has("http_post_webhook")) {
       const url = userText.match(/https?:\/\/[^\s"'<>]+/)?.[0] ?? "https://example.com/hook";
@@ -103,11 +115,11 @@ export function mockChat(req: ChatRequest): { content: string | null; toolCalls:
 
 /** Deterministic bag-of-words hashing embedding so lexical overlap ≈ semantic similarity in tests. */
 export function mockEmbed(text: string): number[] {
-  const v = new Array(1536).fill(0);
+  const v = new Array(1024).fill(0);
   for (const w of text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((x) => x.length > 2)) {
     let h = 2166136261;
     for (let i = 0; i < w.length; i++) h = Math.imul(h ^ w.charCodeAt(i), 16777619);
-    v[Math.abs(h) % 1536] += 1;
+    v[Math.abs(h) % 1024] += 1;
   }
   const norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0)) || 1;
   return v.map((x) => x / norm);

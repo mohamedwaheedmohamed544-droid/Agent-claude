@@ -18,7 +18,7 @@ const Body = z.object({
  * that executes in the background; poll GET /api/tasks/:id for progress.
  */
 export const POST = workspaceRoute(async ({ req, user, workspaceId }) => {
-  if (!isAiConfigured()) throw unavailable("AI is not configured on this deployment (OPENAI_API_KEY / OPENAI_MODEL)");
+  if (!isAiConfigured()) throw unavailable("AI is not configured on this deployment (ANTHROPIC_API_KEY)");
   const b = Body.parse(await readJson(req, 100_000));
   const r = await handleChatMessage({
     workspaceId, userId: user.id, locale: user.locale, conversationId: b.conversationId ?? null, text: b.message, fileIds: b.fileIds,

@@ -3,4 +3,4 @@ process.env.DATABASE_URL = process.env.TEST_DATABASE_URL ?? "postgres://postgres
 process.env.NEXUS_LLM_PROVIDER = "mock";
 process.env.NEXUS_DISABLE_KICK = "1";
 process.env.NEXUS_ENCRYPTION_KEY = process.env.NEXUS_ENCRYPTION_KEY ?? "test-only-encryption-key-not-for-production";
-process.env.OPENAI_MODEL = process.env.OPENAI_MODEL ?? "mock-model";
+process.env.ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL ?? "mock-model";

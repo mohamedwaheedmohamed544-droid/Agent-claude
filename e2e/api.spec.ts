@@ -155,7 +155,7 @@ test.describe("API end-to-end (production build, real Postgres, mock LLM)", () =
     expect(a.totals.calls).toBeGreaterThan(0);
     const h = await (await request.get("/api/admin/health")).json();
     expect(h.database.ok).toBe(true);
-    expect(typeof h.configuration.OPENAI_API_KEY).toBe("boolean");
+    expect(typeof h.configuration.ANTHROPIC_API_KEY).toBe("boolean");
     expect(JSON.stringify(h)).not.toContain("e2e-only-key");
   });
 });

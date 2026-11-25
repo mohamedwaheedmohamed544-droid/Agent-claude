@@ -26,7 +26,7 @@ export const PLAN_SCHEMA = {
   properties: {
     mode: { type: "string", enum: ["direct", "single", "multi"] },
     title: { type: "string" },
-    reply: { type: ["string", "null"] },
+    reply: { anyOf: [{ type: "string" }, { type: "null" }] },
     steps: {
       type: "array",
       items: {
@@ -40,7 +40,7 @@ export const PLAN_SCHEMA = {
           instruction: { type: "string" },
           expected_output: { type: "string" },
           depends_on: { type: "array", items: { type: "string" } },
-          condition: { type: ["string", "null"] },
+          condition: { anyOf: [{ type: "string" }, { type: "null" }] },
         },
       },
     },
@@ -109,11 +109,12 @@ export async function planRequest(input: PlanInput): Promise<Plan> {
     `Plan the response to this request:`,
     `<user_request>${input.request}</user_request>`,
   ].filter(Boolean).join("\n\n");
-  const messages: ChatMessage[] = [{ role: "system", content: ORCHESTRATOR_PROMPT }, { role: "user", content: user }];
+  const messages: ChatMessage[] = [{ role: "user", content: user }];
 
   let lastErr: Error | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     const { data } = await chatJson<Plan>({
+      system: ORCHESTRATOR_PROMPT,
       messages: lastErr ? [...messages, { role: "user", content: `Your previous plan was invalid: ${lastErr.message}. Return a corrected plan.` }] : messages,
       jsonSchema: { name: "task_plan", schema: PLAN_SCHEMA as unknown as Record<string, unknown> },
       tier: "standard",

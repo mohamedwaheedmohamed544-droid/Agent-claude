@@ -5,7 +5,9 @@ specialist agents — **Research, Business Development, Documents, Writing, Anal
 Intelligence** — that work with your documents, memory and connected apps under an explicit
 **approval engine**. Arabic (RTL) and English, light and dark.
 
-Stack: Next.js 15 (App Router) · React 19 · TypeScript · Tailwind CSS 4 · PostgreSQL (Neon) + pgvector · OpenAI API · Vercel.
+Stack: Next.js 15 (App Router) · React 19 · TypeScript · Tailwind CSS 4 · PostgreSQL (Neon) + pgvector · Anthropic Claude API · Vercel.
+
+AI: every agent and the orchestrator run on **Claude** (default `claude-opus-5-5`, adaptive thinking, effort per agent tier, server-side refusal fallback, prompt caching). Web search uses Claude's built-in web search tool. Semantic embeddings are optional via **Voyage AI** (Anthropic has no embeddings API); without a Voyage key, knowledge and memory search use keyword matching.
 
 See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the design, task lifecycle, approval model and security model.
 
@@ -16,17 +18,17 @@ See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the design, task lifecy
 | AI Workspace | Conversations with persistent history; live task runs showing plan, parallel steps, agent handoffs, tool activity, inline approvals, sources and deliverables |
 | Orchestrator & tasks | Structured planning (direct / single / multi-agent), validated dependency graphs, parallel + conditional steps, retries with backoff, pause/resume/cancel/retry, crash-safe resumption |
 | Approvals | L1 read & L2 prepare run automatically; L3 modify needs approval (configurable); L4 external always needs approval. Approval is bound to a hash of the exact parameters and executes once |
-| Knowledge | Upload PDF, DOCX, XLSX, PPTX, CSV, TXT, MD, JSON → validated, parsed, chunked, embedded (pgvector) → hybrid semantic + keyword search; file manager and knowledge bases |
+| Knowledge | Upload PDF, DOCX, XLSX, PPTX, CSV, TXT, MD, JSON → validated, parsed, chunked → keyword search, plus semantic search (pgvector) when Voyage embeddings are configured; file manager and knowledge bases |
 | Memory | User / workspace / task memory with semantic retrieval; agent-proposed memories require approval; secrets are rejected |
 | Deliverables | Word (.docx, RTL-aware) and Excel (.xlsx) generation, email drafts, reports |
-| Integrations | Gmail & Outlook (search, send), Google & Outlook Calendar, Google Drive (search, upload) via OAuth; webhooks; OpenAI web search |
+| Integrations | Gmail & Outlook (search, send), Google & Outlook Calendar, Google Drive (search, upload) via OAuth; webhooks; Claude web search |
 | Control | Emergency stop, per-tool enable/disable, agent prompt/tool/model customisation with version history, roles (owner/admin/member/viewer), audit log, usage & cost analytics, system health |
 
 ## Setup
 
 ```bash
 npm install
-cp .env.example .env.local   # fill DATABASE_URL, OPENAI_API_KEY, OPENAI_MODEL, NEXUS_ENCRYPTION_KEY
+cp .env.example .env.local   # fill DATABASE_URL, ANTHROPIC_API_KEY, NEXUS_ENCRYPTION_KEY
 npm run db:migrate
 npm run dev
 ```
@@ -35,9 +37,10 @@ Open http://localhost:3000 and create an account (the first account becomes plat
 
 ### Environment variables
 
-All variables are documented in [`.env.example`](.env.example). Required: `DATABASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`.
-Strongly recommended: `NEXUS_ENCRYPTION_KEY` (needed to connect integrations), `CRON_SECRET`, `NEXUS_APP_URL`.
-Models are never assumed: **Analytics → System health** checks every configured model against your account's model list.
+All variables are documented in [`.env.example`](.env.example). Required: `DATABASE_URL`, `ANTHROPIC_API_KEY`.
+Strongly recommended: `NEXUS_ENCRYPTION_KEY` (needed to connect integrations), `CRON_SECRET`, `NEXUS_APP_URL`. Optional: `VOYAGE_API_KEY` for semantic search,
+`ANTHROPIC_MODEL` (default `claude-opus-5-5`) and `ANTHROPIC_FALLBACK_MODEL`.
+**Analytics → System health** checks every configured model against your Anthropic account's model list.
 
 ### Deploying to Vercel
 
@@ -60,7 +63,7 @@ Then set `GOOGLE_CLIENT_ID/SECRET`, `MICROSOFT_CLIENT_ID/SECRET` (and optionally
 ## Testing
 
 ```bash
-npm test                 # 80 unit/integration tests against a real Postgres test DB (mock LLM)
+npm test                 # 85 unit/integration tests against a real Postgres test DB (mock LLM)
 npm run build && npm run test:e2e   # 16 Playwright tests: API, desktop UI, mobile — against `next start`
 ```
 
@@ -73,9 +76,10 @@ production unless explicitly overridden, and every mock answer is labelled `[moc
 
 ## Known limitations
 
-* Live OpenAI behaviour (planning quality, web search, embeddings) has not been verified in this build environment —
-  no API key was available. Everything AI-facing is tested end-to-end with the mock model; run the app with your key and
-  check **Analytics → System health**.
+* Live Claude behaviour (planning quality, web search) has not been verified against the real API in this build environment —
+  no key was available. The Anthropic SDK request/response path is tested against a local fake of the Messages API, and
+  the whole platform end-to-end with the mock model; run the app with your key and check **Analytics → System health**.
+* Semantic (vector) search requires a Voyage AI key; without it, search is keyword-based.
 * OAuth connectors are tested against mocked provider APIs; they need real client credentials to be exercised live.
 * No native CRM connector yet — CRM updates go through the approval-gated webhook tool or spreadsheet exports.
 * No OCR: scanned (image-only) PDFs are rejected with an explanation.

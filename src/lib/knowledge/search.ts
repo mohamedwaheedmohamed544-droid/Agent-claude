@@ -41,7 +41,7 @@ export async function searchKnowledge(
   try {
     const hasEmb = await query<{ n: number }>("SELECT 1 AS n FROM embeddings WHERE workspace_id=$1 LIMIT 1", [workspaceId]);
     if (hasEmb.length) {
-      const { vectors } = await embed([q], { ...ctx, workspaceId, purpose: "retrieval" });
+      const { vectors } = await embed([q], { ...ctx, workspaceId, purpose: "retrieval" }, "query");
       const vp = [...params, toVector(vectors[0])];
       const rows = await query<Row>(
         `SELECT c.id, c.file_id, f.filename, c.chunk_index, c.content, c.metadata, 1 - (e.embedding <=> $${vp.length}::vector) AS s

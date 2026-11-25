@@ -9,20 +9,20 @@ import type { IntegrationInfo, IntegrationStatus, TestResult, ToolRef } from "./
 
 export type CardKey =
   | "gmail" | "outlook" | "google_calendar" | "outlook_calendar" | "google_drive"
-  | "openai" | "web_search" | "neon" | "webhook" | "crm";
+  | "anthropic" | "web_search" | "neon" | "webhook" | "crm";
 
 type Tone = "neutral" | "accent" | "success" | "warning" | "danger" | "info";
 
 const ICONS: Record<CardKey, React.ComponentType<{ className?: string }>> = {
   gmail: Mail, outlook: Mail, google_calendar: Calendar, outlook_calendar: Calendar, google_drive: HardDrive,
-  openai: Sparkles, web_search: Globe, neon: Database, webhook: Webhook, crm: Users,
+  anthropic: Sparkles, web_search: Globe, neon: Database, webhook: Webhook, crm: Users,
 };
 
 const ICON_TONE: Record<CardKey, string> = {
   gmail: "bg-accent-soft text-accent-text", outlook: "bg-accent-soft text-accent-text",
   google_calendar: "bg-info-soft text-info", outlook_calendar: "bg-info-soft text-info",
   google_drive: "bg-success-soft text-success",
-  openai: "bg-accent-soft text-accent-text", web_search: "bg-info-soft text-info", neon: "bg-success-soft text-success",
+  anthropic: "bg-accent-soft text-accent-text", web_search: "bg-info-soft text-info", neon: "bg-success-soft text-success",
   webhook: "bg-warning-soft text-warning", crm: "bg-surface-2 text-fg-2",
 };
 
@@ -163,7 +163,7 @@ function SetupPanel({ entry }: { entry: IntegrationInfo }) {
 function BuiltinDetails({ entry }: { entry: IntegrationInfo }) {
   const { t } = useApp();
   const d = entry.details ?? {};
-  if (entry.provider === "openai") {
+  if (entry.provider === "anthropic") {
     const models = (d.models as Array<{ role: string; model: string | null; available: boolean | null }> | undefined) ?? [];
     return (
       <div className="space-y-2">

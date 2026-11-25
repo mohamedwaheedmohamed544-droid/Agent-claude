@@ -10,7 +10,7 @@ import { useFormat } from "./format";
 
 interface Health {
   database: { ok: boolean; latencyMs: number; version: string; vector: string | null; migrations: number; size: string };
-  ai: { mode: "mock" | "openai"; checked: boolean; error?: string; models: Array<{ role: string; model: string | null; available: boolean | null }> };
+  ai: { mode: "mock" | "anthropic"; checked: boolean; error?: string; models: Array<{ role: string; model: string | null; available: boolean | null }> };
   queue: { running: number; planned: number; waitingApproval: number; paused: number; stalled: number };
   recentServerErrors: Array<{ route: string; status: number; n: number }>;
   configuration: Record<string, boolean>;
@@ -18,8 +18,8 @@ interface Health {
 }
 
 /** Required for a working deployment vs. optional (feature-specific). Values are never shown — only presence. */
-const REQUIRED = new Set(["OPENAI_API_KEY", "OPENAI_MODEL", "DATABASE_URL", "NEXUS_ENCRYPTION_KEY"]);
-const RECOMMENDED = new Set(["CRON_SECRET", "OPENAI_FALLBACK_MODEL"]);
+const REQUIRED = new Set(["ANTHROPIC_API_KEY", "DATABASE_URL", "NEXUS_ENCRYPTION_KEY"]);
+const RECOMMENDED = new Set(["CRON_SECRET", "VOYAGE_API_KEY"]);
 
 export function SystemHealth() {
   const { t } = useApp();

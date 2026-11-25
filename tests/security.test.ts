@@ -148,8 +148,8 @@ describe("tool permission enforcement", () => {
   it("exposes JSON schemas to the model with risk levels", () => {
     const specs = toolSpecs(["web_search", "http_post_webhook"]);
     expect(specs).toHaveLength(2);
-    expect(specs[1].function.description).toContain("risk level 4");
-    expect((specs[0].function.parameters as { properties: object }).properties).toHaveProperty("query");
+    expect(specs[1].description).toContain("risk level 4");
+    expect((specs[0].input_schema as { properties: object }).properties).toHaveProperty("query");
   });
 });
 

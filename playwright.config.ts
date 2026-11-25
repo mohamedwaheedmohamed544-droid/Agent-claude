@@ -30,7 +30,7 @@ export default defineConfig({
       E2E_DATABASE_URL: DB,
       NEXUS_LLM_PROVIDER: "mock",
       NEXUS_ALLOW_MOCK: "1",
-      OPENAI_MODEL: "mock-model",
+      ANTHROPIC_MODEL: "mock-model",
       NEXUS_ENCRYPTION_KEY: "e2e-only-key-not-for-production",
       CRON_SECRET: "e2e-cron-secret",
       NEXUS_TASK_BUDGET_MS: "60000",

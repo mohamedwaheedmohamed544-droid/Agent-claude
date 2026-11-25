@@ -26,7 +26,7 @@ export async function GET() {
     {
       status,
       service: "nexus-ai",
-      checks: { database, migrationsApplied: migrations, pgvector, aiConfigured: ai, aiMode: isMockMode() ? "mock" : "openai" },
+      checks: { database, migrationsApplied: migrations, pgvector, aiConfigured: ai, aiMode: isMockMode() ? "mock" : "anthropic" },
       latencyMs: Date.now() - started,
       time: new Date().toISOString(),
     },
