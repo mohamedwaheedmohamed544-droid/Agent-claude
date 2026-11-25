@@ -1,11 +1,12 @@
 "use client";
 
 import { Page } from "@/components/page";
-import { PageHeader } from "@/components/ui";
-import { useApp } from "@/components/providers";
+import { Dashboard } from "@/components/dashboard/dashboard";
 
-// Placeholder — replaced by the dashboard page implementation.
-export default function Placeholder() {
-  const { t } = useApp();
-  return <Page><PageHeader title={t("nav.dashboard")} /></Page>;
+export default function DashboardPage() {
+  return (
+    <Page wide>
+      <Dashboard />
+    </Page>
+  );
 }

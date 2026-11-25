@@ -1,11 +1,17 @@
 "use client";
 
+import { ListChecks } from "lucide-react";
 import { Page } from "@/components/page";
 import { PageHeader } from "@/components/ui";
 import { useApp } from "@/components/providers";
+import { TaskList } from "@/components/tasks/task-list";
 
-// Placeholder — replaced by the tasks page implementation.
-export default function Placeholder() {
+export default function TasksPage() {
   const { t } = useApp();
-  return <Page><PageHeader title={t("nav.tasks")} /></Page>;
+  return (
+    <Page wide>
+      <PageHeader icon={<ListChecks className="size-5" />} title={t("nav.tasks")} description={t("tasks.description")} />
+      <TaskList />
+    </Page>
+  );
 }

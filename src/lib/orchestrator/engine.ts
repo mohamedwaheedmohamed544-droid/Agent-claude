@@ -85,6 +85,15 @@ async function release(taskId: string, owner: string) {
   await query("UPDATE tasks SET lock_owner=NULL, locked_until=NULL WHERE id=$1 AND lock_owner=$2", [taskId, owner]);
 }
 
+async function postCancelledMessage(taskId: string) {
+  await query(
+    `INSERT INTO messages(conversation_id, workspace_id, role, content, agent_slug, task_id, metadata)
+     SELECT conversation_id, workspace_id, 'assistant', 'The task was cancelled.', 'orchestrator', id, '{"kind":"task_cancelled"}'::jsonb
+       FROM tasks WHERE id=$1 AND conversation_id IS NOT NULL`,
+    [taskId],
+  );
+}
+
 async function setTaskStatus(taskId: string, status: TaskStatus, extra: { result?: string; summary?: string; error?: unknown } = {}) {
   const terminal = ["completed", "failed", "cancelled"].includes(status);
   await query(
@@ -250,6 +259,7 @@ export async function runTask(taskId: string, opts: { budgetMs?: number } = {}):
         await query("UPDATE task_steps SET status='cancelled', updated_at=now() WHERE task_id=$1 AND status IN ('pending','running','waiting_approval')", [taskId]);
         await query("UPDATE approvals SET status='expired', decided_at=now() WHERE task_id=$1 AND status='pending'", [taskId]);
         await setTaskStatus(taskId, "cancelled");
+        await postCancelledMessage(taskId);
         await audit({ workspaceId: task.workspace_id, actorType: "system", action: "task.cancelled", targetType: "task", targetId: taskId });
         return "cancelled";
       }
@@ -340,6 +350,7 @@ export async function controlTask(workspaceId: string, taskId: string, action: "
       await query("UPDATE task_steps SET status='cancelled', updated_at=now() WHERE task_id=$1 AND status IN ('pending','running','waiting_approval')", [taskId]);
       await query("UPDATE approvals SET status='expired', decided_at=now() WHERE task_id=$1 AND status='pending'", [taskId]);
       await setTaskStatus(taskId, "cancelled");
+      await postCancelledMessage(taskId);
       next = "cancelled";
     }
   } else if (action === "pause") {

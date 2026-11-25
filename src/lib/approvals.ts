@@ -25,12 +25,14 @@ export interface ApprovalRow {
   createdAt: string;
   taskTitle: string | null;
   taskCreatedBy: string | null;
+  decidedByName?: string | null;
 }
 
 const COLS = `a.id, a.task_id AS "taskId", a.step_id AS "stepId", a.tool_name AS "toolName", a.risk_level AS "riskLevel",
   a.agent_slug AS "agentSlug", a.summary, a.destination, a.params, a.params_hash AS "paramsHash", a.status,
   a.decided_by AS "decidedBy", a.decided_at AS "decidedAt", a.decision_note AS "decisionNote", a.expires_at AS "expiresAt",
-  a.created_at AS "createdAt", t.title AS "taskTitle", t.created_by AS "taskCreatedBy"`;
+  a.created_at AS "createdAt", t.title AS "taskTitle", t.created_by AS "taskCreatedBy",
+  (SELECT du.name FROM users du WHERE du.id = a.decided_by) AS "decidedByName"`;
 
 export async function listApprovals(workspaceId: string, status?: string, taskId?: string): Promise<ApprovalRow[]> {
   await query("UPDATE approvals SET status='expired' WHERE workspace_id=$1 AND status='pending' AND expires_at < now()", [workspaceId]);
