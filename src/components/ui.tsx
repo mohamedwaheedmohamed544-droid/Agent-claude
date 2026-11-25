@@ -196,7 +196,7 @@ export function Spinner({ className }: { className?: string }) {
 }
 
 export function Skeleton({ className }: { className?: string }) {
-  return <div className={cx("animate-pulse rounded-lg bg-surface-2", className)} />;
+  return <span aria-hidden="true" className={cx("block animate-pulse rounded-lg bg-surface-2", className)} />;
 }
 
 export function LoadingBlock({ rows = 3 }: { rows?: number }) {
@@ -276,7 +276,7 @@ export function Stat({ label, value, hint, icon, tone = "accent" }: { label: Rea
         <p className="text-[13px] font-medium text-fg-3">{label}</p>
         {icon && <span className={cx("grid size-8 place-items-center rounded-lg", TONE[tone])}>{icon}</span>}
       </div>
-      <p className="mt-2 text-2xl font-semibold tracking-tight text-fg tabular-nums">{value}</p>
+      <div className="mt-2 text-2xl font-semibold tracking-tight text-fg tabular-nums">{value}</div>
       {hint && <p className="mt-0.5 text-xs text-fg-3">{hint}</p>}
     </Card>
   );

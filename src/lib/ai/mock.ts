@@ -91,7 +91,7 @@ export function mockChat(req: ChatRequest): { content: string | null; toolCalls:
       return done(null, [call("update_work_item", { id, status: "done" })]);
     }
     if (step.includes("write a document") && toolNames.has("create_document")) {
-      return done(null, [call("create_document", { title: "Mock Report", format: "markdown", content: "# Mock Report\n\nGenerated in test mode." })]);
+      return done(null, [call("create_document", { title: "Mock Report", format: "docx", content: "# Mock Report\n\nGenerated in test mode.\n\n| Metric | Value |\n|---|---|\n| Market | GCC |" })]);
     }
     const calls: ToolCall[] = [];
     if (toolNames.has("knowledge_search") && /(search|knowledge|document)/.test(step)) calls.push(call("knowledge_search", { query: userText.slice(0, 100), limit: 3 }));

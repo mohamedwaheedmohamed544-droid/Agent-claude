@@ -14,7 +14,6 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   reporter: [["list"]],
-  globalSetup: "./e2e/global-setup.ts",
   use: { baseURL: `http://localhost:${PORT}`, trace: "off", screenshot: "only-on-failure" },
   projects: [
     { name: "api", testMatch: /api\.spec\.ts/ },
@@ -22,12 +21,13 @@ export default defineConfig({
     { name: "mobile", testMatch: /mobile\.spec\.ts/, use: { ...devices["Pixel 7"] } },
   ],
   webServer: {
-    command: `npx next start -p ${PORT}`,
+    command: `npx tsx e2e/prepare-db.ts && npx next start -p ${PORT}`,
     url: `http://localhost:${PORT}/api/health`,
     reuseExistingServer: false,
     timeout: 120_000,
     env: {
       DATABASE_URL: DB,
+      E2E_DATABASE_URL: DB,
       NEXUS_LLM_PROVIDER: "mock",
       NEXUS_ALLOW_MOCK: "1",
       OPENAI_MODEL: "mock-model",
