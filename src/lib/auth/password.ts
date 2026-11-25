@@ -1,0 +1,27 @@
+import { randomBytes, scrypt as _scrypt, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
+
+const scrypt = promisify(_scrypt) as (pw: string, salt: Buffer, keylen: number, opts: object) => Promise<Buffer>;
+const PARAMS = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
+
+export async function hashPassword(password: string): Promise<string> {
+  const salt = randomBytes(16);
+  const key = await scrypt(password, salt, 64, PARAMS);
+  return `scrypt$${PARAMS.N}$${salt.toString("base64")}$${key.toString("base64")}`;
+}
+
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  const [alg, n, saltB64, keyB64] = stored.split("$");
+  if (alg !== "scrypt" || !saltB64 || !keyB64) return false;
+  const expected = Buffer.from(keyB64, "base64");
+  const key = await scrypt(password, Buffer.from(saltB64, "base64"), expected.length, { ...PARAMS, N: Number(n) });
+  return key.length === expected.length && timingSafeEqual(key, expected);
+}
+
+/** Strength policy: >= 10 chars, at least one letter and one digit. */
+export function passwordPolicyError(password: string): string | null {
+  if (password.length < 10) return "Password must be at least 10 characters";
+  if (password.length > 200) return "Password is too long";
+  if (!/[A-Za-z؀-ۿ]/.test(password) || !/\d/.test(password)) return "Password must contain letters and numbers";
+  return null;
+}
