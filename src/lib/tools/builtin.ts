@@ -6,6 +6,7 @@ import { searchKnowledge } from "../knowledge/search";
 import { addMemory, searchMemory } from "../memory/store";
 import { markdownToDocx, rowsToXlsx, saveArtifact } from "../artifacts";
 import { htmlToText, safeFetch } from "../security/net";
+import { parseCsv } from "../knowledge/parsers";
 import { getWorkspaceSettings } from "../settings";
 import { defineTool, ToolUserError, type ToolDefinition } from "./types";
 
@@ -147,31 +148,6 @@ function cellText(v: unknown): string {
     if (v instanceof Date) return v.toISOString().slice(0, 10);
   }
   return String(v);
-}
-
-export function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cur = "";
-  let q = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (q) {
-      if (c === '"' && text[i + 1] === '"') { cur += '"'; i++; }
-      else if (c === '"') q = false;
-      else cur += c;
-    } else if (c === '"') q = true;
-    else if (c === ",") { row.push(cur); cur = ""; }
-    else if (c === "\n" || c === "\r") {
-      if (c === "\r" && text[i + 1] === "\n") i++;
-      row.push(cur); cur = "";
-      if (row.some((x) => x !== "")) rows.push(row);
-      row = [];
-    } else cur += c;
-  }
-  row.push(cur);
-  if (row.some((x) => x !== "")) rows.push(row);
-  return rows;
 }
 
 const num = (s: string) => {
