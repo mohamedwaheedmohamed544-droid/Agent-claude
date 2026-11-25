@@ -38,7 +38,7 @@ export const AGENTS: AgentDefinition[] = [
     color: "#2563eb",
     capabilities: ["Web research", "Source discovery", "Fact verification", "Competitor research", "Market analysis", "Industry intelligence", "Citations", "Research reports"],
     tier: "standard",
-    tools: ["web_search", "fetch_url", "knowledge_search", "memory_search", "create_document", "propose_memory"],
+    tools: ["web_search", "fetch_url", "knowledge_search", "memory_search", "create_document", "propose_memory", "drive_search"],
     prompt: `You are the Research Agent. Find, verify and synthesise information.
 - Use web_search for current/external facts and knowledge_search for the user's own documents. Cross-check important claims against at least two sources when possible.
 - Distinguish verified facts, estimates and opinions. Record dates of information.
@@ -55,7 +55,7 @@ export const AGENTS: AgentDefinition[] = [
     color: "#0d9488",
     capabilities: ["Company discovery", "Lead research", "Prospect qualification", "Contact research (authorized sources)", "Opportunity assessment", "CRM preparation", "Outreach preparation", "Pipeline intelligence"],
     tier: "standard",
-    tools: ["web_search", "fetch_url", "knowledge_search", "memory_search", "create_spreadsheet", "draft_email", "create_work_item", "create_document"],
+    tools: ["web_search", "fetch_url", "knowledge_search", "memory_search", "create_spreadsheet", "draft_email", "create_work_item", "create_document", "email_search", "calendar_list_events"],
     prompt: `You are the Business Development Agent.
 - Research companies and prospects using public, authorized sources only. Never guess personal emails or phone numbers; only report contact details that are published by the organisation or person, with the source.
 - Qualify prospects with explicit criteria (fit, need, budget signals, timing, authority) and a score with rationale.
@@ -71,7 +71,7 @@ export const AGENTS: AgentDefinition[] = [
     color: "#7c3aed",
     capabilities: ["PDF/DOCX/XLSX/PPTX processing", "RFP/RFI analysis", "Competition analysis", "Document comparison", "Requirements extraction", "Compliance matrices", "Technical proposals", "Executive summaries"],
     tier: "advanced",
-    tools: ["list_files", "read_file", "knowledge_search", "analyze_spreadsheet", "create_document", "create_spreadsheet"],
+    tools: ["list_files", "read_file", "knowledge_search", "analyze_spreadsheet", "create_document", "create_spreadsheet", "drive_search", "drive_upload_file"],
     prompt: `You are the Documents Agent.
 - Locate relevant files with list_files / knowledge_search, then read them with read_file. Quote section numbers or page references where available.
 - For RFP/RFI/tender analysis produce: scope summary, key dates, evaluation criteria, mandatory requirements, deliverables, risks, and clarification questions.
@@ -88,7 +88,7 @@ export const AGENTS: AgentDefinition[] = [
     color: "#db2777",
     capabilities: ["Business writing", "Arabic & English", "Emails & correspondence", "LinkedIn content", "Reports", "Proposals", "Presentations", "Editing & proofreading", "Brand voice"],
     tier: "standard",
-    tools: ["knowledge_search", "memory_search", "create_document", "draft_email", "send_email"],
+    tools: ["knowledge_search", "memory_search", "create_document", "draft_email", "send_email", "email_search", "drive_upload_file"],
     prompt: `You are the Writing Agent.
 - Match the user's brand voice and preferences from memory_search when relevant.
 - Produce polished, well-structured text with clear headings. For Arabic, use formal business MSA and correct right-to-left punctuation.
@@ -120,7 +120,7 @@ export const AGENTS: AgentDefinition[] = [
     color: "#16a34a",
     capabilities: ["Task management", "Workflow coordination", "Scheduling", "Checklists", "Process documentation", "Progress monitoring", "Execution tracking"],
     tier: "fast",
-    tools: ["list_work_items", "create_work_item", "update_work_item", "calendar_list_events", "calendar_create_event", "http_post_webhook", "create_document", "send_email"],
+    tools: ["list_work_items", "create_work_item", "update_work_item", "calendar_list_events", "calendar_create_event", "http_post_webhook", "create_document", "send_email", "email_search", "calendar_invite_attendees", "drive_search", "drive_upload_file"],
     prompt: `You are the Operations Agent.
 - Turn objectives into concrete work items with owners, priorities and due dates (create_work_item).
 - Updating existing records, calendar events, webhooks and sending email require user approval; prepare precise parameters so the approval preview is clear.

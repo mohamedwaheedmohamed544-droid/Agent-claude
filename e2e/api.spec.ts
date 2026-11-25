@@ -95,7 +95,7 @@ test.describe("API end-to-end (production build, real Postgres, mock LLM)", () =
     expect(rej.status()).toBe(200);
     const done = await waitForTask(request, taskId, ["completed", "failed"]);
     expect(done.task.status).toBe("completed");
-    expect(done.toolExecutions.filter((e: { status: string }) => e.status === "succeeded" && e.toolName === "http_post_webhook")).toHaveLength(0);
+    expect(done.toolExecutions.filter((e: { status: string; toolName: string }) => e.status === "succeeded" && e.toolName === "http_post_webhook")).toHaveLength(0);
     const again = await request.post(`/api/approvals/${approval.id}`, { data: { decision: "approve", paramsHash: approval.paramsHash } });
     expect(again.status()).toBe(409);
   });
