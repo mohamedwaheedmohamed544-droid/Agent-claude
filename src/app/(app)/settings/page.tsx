@@ -1,11 +1,8 @@
 "use client";
 
 import { Page } from "@/components/page";
-import { PageHeader } from "@/components/ui";
-import { useApp } from "@/components/providers";
+import { SettingsView } from "@/components/settings/settings-view";
 
-// Placeholder — replaced by the settings page implementation.
-export default function Placeholder() {
-  const { t } = useApp();
-  return <Page><PageHeader title={t("nav.settings")} /></Page>;
+export default function SettingsPage() {
+  return <Page><SettingsView /></Page>;
 }

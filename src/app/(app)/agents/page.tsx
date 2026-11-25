@@ -1,11 +1,8 @@
 "use client";
 
 import { Page } from "@/components/page";
-import { PageHeader } from "@/components/ui";
-import { useApp } from "@/components/providers";
+import { AgentDirectory } from "@/components/agents/agent-directory";
 
-// Placeholder — replaced by the agents page implementation.
-export default function Placeholder() {
-  const { t } = useApp();
-  return <Page><PageHeader title={t("nav.agents")} /></Page>;
+export default function AgentsPage() {
+  return <Page wide><AgentDirectory /></Page>;
 }

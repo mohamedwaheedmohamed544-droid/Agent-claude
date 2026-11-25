@@ -1,11 +1,8 @@
 "use client";
 
 import { Page } from "@/components/page";
-import { PageHeader } from "@/components/ui";
-import { useApp } from "@/components/providers";
+import { AuditLogView } from "@/components/activity/audit-log";
 
-// Placeholder — replaced by the activity page implementation.
-export default function Placeholder() {
-  const { t } = useApp();
-  return <Page><PageHeader title={t("nav.activity")} /></Page>;
+export default function ActivityPage() {
+  return <Page><AuditLogView /></Page>;
 }

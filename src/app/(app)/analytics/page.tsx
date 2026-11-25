@@ -1,11 +1,8 @@
 "use client";
 
 import { Page } from "@/components/page";
-import { PageHeader } from "@/components/ui";
-import { useApp } from "@/components/providers";
+import { AnalyticsDashboard } from "@/components/analytics/analytics-dashboard";
 
-// Placeholder — replaced by the analytics page implementation.
-export default function Placeholder() {
-  const { t } = useApp();
-  return <Page><PageHeader title={t("nav.analytics")} /></Page>;
+export default function AnalyticsPage() {
+  return <Page wide><AnalyticsDashboard /></Page>;
 }

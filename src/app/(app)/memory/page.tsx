@@ -1,11 +1,8 @@
 "use client";
 
 import { Page } from "@/components/page";
-import { PageHeader } from "@/components/ui";
-import { useApp } from "@/components/providers";
+import { MemoryManager } from "@/components/memory/memory-manager";
 
-// Placeholder — replaced by the memory page implementation.
-export default function Placeholder() {
-  const { t } = useApp();
-  return <Page><PageHeader title={t("nav.memory")} /></Page>;
+export default function MemoryPage() {
+  return <Page><MemoryManager /></Page>;
 }
