@@ -229,15 +229,17 @@ export async function webSearch(q: string, ctx: CallContext): Promise<WebSearchR
 }
 
 /** Checks that configured models are actually available to this API key. Cached for 10 minutes. */
-let accessCache: { at: number; value: ModelAccessReport } | null = null;
+const accessCache = new Map<string, { at: number; value: ModelAccessReport }>();
 export interface ModelAccessReport {
   checked: boolean;
   error?: string;
   models: Array<{ role: string; model: string | null; available: boolean | null }>;
 }
-export async function verifyModelAccess(force = false): Promise<ModelAccessReport> {
-  if (!force && accessCache && Date.now() - accessCache.at < 600_000) return accessCache.value;
-  const m = resolveModels();
+export async function verifyModelAccess(force = false, models?: ReturnType<typeof resolveModels>): Promise<ModelAccessReport> {
+  const m = models ?? resolveModels();
+  const cacheKey = [m.primary, m.fallback, m.fast, m.advanced, m.embedding].join("|");
+  const cached = accessCache.get(cacheKey);
+  if (!force && cached && Date.now() - cached.at < 600_000) return cached.value;
   const roles: Array<[string, string | null]> = [["primary", m.primary], ["fallback", m.fallback], ["fast", m.fast], ["advanced", m.advanced], ["embedding", m.embedding]];
   let report: ModelAccessReport;
   if (isMockMode()) {
@@ -253,6 +255,6 @@ export async function verifyModelAccess(force = false): Promise<ModelAccessRepor
       report = { checked: false, error: redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 200), models: roles.map(([role, model]) => ({ role, model, available: null })) };
     }
   }
-  accessCache = { at: Date.now(), value: report };
+  accessCache.set(cacheKey, { at: Date.now(), value: report });
   return report;
 }

@@ -113,6 +113,11 @@ export async function updateWorkspaceAgent(
 ): Promise<AgentConfig> {
   const base = await getAgent(workspaceId, slug);
   if (!base) throw new Error("Agent not found");
+  const onlyActive = Object.keys(patch).filter((k) => patch[k as keyof typeof patch] !== undefined).every((k) => k === "active");
+  if (onlyActive && base.workspaceScoped && patch.active !== undefined) {
+    await query("UPDATE agents SET active=$2, updated_at=now() WHERE id=$1", [base.id, patch.active]);
+    return (await getAgent(workspaceId, slug))!;
+  }
   await transaction(async (c) => {
     let agentId = base.workspaceScoped ? base.id : null;
     if (!agentId) {

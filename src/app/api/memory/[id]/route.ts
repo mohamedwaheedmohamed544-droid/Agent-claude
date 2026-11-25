@@ -16,7 +16,8 @@ export const PATCH = workspaceRoute(async ({ req, workspaceId, user, params }) =
   const p = Patch.parse(await readJson(req));
   const m = await updateMemory(workspaceId, user.id, params.id, p);
   if (!m) throw notFound("Memory not found");
-  await audit({ workspaceId, userId: user.id, actorType: "user", action: p.status === "active" ? "memory.approved" : "memory.updated", targetType: "memory", targetId: params.id });
+  const action = p.status === "active" ? "memory.approved" : p.status === "archived" ? "memory.archived" : "memory.updated";
+  await audit({ workspaceId, userId: user.id, actorType: "user", action, targetType: "memory", targetId: params.id });
   return { memory: m };
 });
 

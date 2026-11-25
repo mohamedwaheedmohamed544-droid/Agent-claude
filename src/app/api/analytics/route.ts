@@ -13,7 +13,7 @@ export const GET = workspaceRoute(async ({ req, workspaceId }) => {
               COALESCE(avg(latency_ms),0)::int AS "avgLatencyMs"
          FROM usage_records WHERE workspace_id=$1 AND ${since}`, p),
     query(
-      `SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day, sum(prompt_tokens + completion_tokens)::int AS tokens,
+      `SELECT to_char(date_trunc('day', created_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day, sum(prompt_tokens + completion_tokens)::int AS tokens,
               sum(cost_usd)::float AS "costUsd", count(*)::int AS calls
          FROM usage_records WHERE workspace_id=$1 AND ${since} GROUP BY 1 ORDER BY 1`, p),
     query(
@@ -36,8 +36,8 @@ export const GET = workspaceRoute(async ({ req, workspaceId }) => {
               count(*) FILTER (WHERE status >= 400 AND status < 500)::int AS "clientErrors", COALESCE(avg(duration_ms),0)::int AS "avgMs"
          FROM api_request_logs WHERE workspace_id=$1 AND ${since}`, p),
     queryOne(
-      `SELECT COALESCE(avg(EXTRACT(EPOCH FROM (completed_at - created_at))),0)::float AS "avgTaskSeconds",
-              COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - created_at))),0)::float AS "p90TaskSeconds"
+      `SELECT avg(EXTRACT(EPOCH FROM (completed_at - created_at)))::float AS "avgTaskSeconds",
+              (percentile_cont(0.9) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - created_at))))::float AS "p90TaskSeconds"
          FROM tasks WHERE workspace_id=$1 AND ${since} AND status='completed'`, p),
   ]);
   return { days, totals, daily, models, tasks, agents, tools, approvals, api, durations, costNote: "Costs are estimates based on published per-token prices." };

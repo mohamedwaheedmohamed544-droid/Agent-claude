@@ -2,6 +2,8 @@ import { workspaceRoute } from "@/lib/api";
 import { query, queryOne } from "@/lib/db";
 import { isMockMode, verifyModelAccess } from "@/lib/ai/llm";
 import { hasEncryptionKey } from "@/lib/security/crypto";
+import { resolveModels } from "@/lib/ai/models";
+import { getWorkspaceSettings } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +16,7 @@ export const GET = workspaceRoute(async ({ req, workspaceId }) => {
             (SELECT count(*)::int FROM schema_migrations) AS migrations, pg_size_pretty(pg_database_size(current_database())) AS size`,
   );
   const dbLatency = Date.now() - started;
-  const models = await verifyModelAccess(force);
+  const models = await verifyModelAccess(force, resolveModels(await getWorkspaceSettings(workspaceId)));
   const queue = await queryOne(
     `SELECT count(*) FILTER (WHERE status='running')::int AS running, count(*) FILTER (WHERE status='planned')::int AS planned,
             count(*) FILTER (WHERE status='waiting_approval')::int AS "waitingApproval", count(*) FILTER (WHERE status='paused')::int AS paused,
