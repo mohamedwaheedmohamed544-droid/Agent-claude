@@ -27,6 +27,7 @@ export interface ApprovalPreview {
   destination?: string;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous tool registry
 export interface ToolDefinition<I = any> {
   name: string;
   description: string;

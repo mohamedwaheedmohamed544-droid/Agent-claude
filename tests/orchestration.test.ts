@@ -112,7 +112,7 @@ describe("approval enforcement", () => {
     expect(ok.length).toBe(1);
     const [after] = await listApprovals(u.workspaceId, undefined, r.taskId!);
     expect(after.status).toBe("executed");
-    const audit = await query("SELECT action FROM audit_logs WHERE workspace_id=$1", [u.workspaceId]);
+    const audit = await query<{ action: string }>("SELECT action FROM audit_logs WHERE workspace_id=$1", [u.workspaceId]);
     expect(audit.map((x: { action: string }) => x.action)).toEqual(expect.arrayContaining(["approval.requested", "approval.approved", "tool.executed"]));
   });
 
