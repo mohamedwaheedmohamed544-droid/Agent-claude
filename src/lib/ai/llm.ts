@@ -128,6 +128,9 @@ export async function chat(req: ChatRequest): Promise<ChatResult> {
 
   if (isMockMode()) {
     const started = Date.now();
+    // Test-only pacing so end-to-end tests can observe live states (never applies outside mock mode).
+    const delay = Number(process.env.NEXUS_MOCK_DELAY_MS ?? 0);
+    if (delay > 0) await new Promise((r) => setTimeout(r, Math.min(delay, 10_000)));
     const r = mockChat(req);
     const assistantContent = [
       ...(r.content ? [{ type: "text", text: r.content, citations: null }] : []),
