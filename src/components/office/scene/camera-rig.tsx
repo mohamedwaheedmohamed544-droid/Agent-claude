@@ -16,7 +16,7 @@ const VIEW_PORTRAIT = new THREE.Vector3(0.95, 1.05, 0.22).normalize();
 const MIN_DIST = 3.5;
 
 /** Camera position/target that frames a rect from the standard elevated 3/4 direction. */
-function frame(r: Rect, isZone: boolean, camera: THREE.PerspectiveCamera, aspect: number) {
+function frame(r: Rect, isZone: boolean, camera: THREE.PerspectiveCamera, aspect: number, margin = 1) {
   const portrait = aspect < 0.85;
   const center = new THREE.Vector3((r.minX + r.maxX) / 2, isZone ? 0.6 : 0, (r.minZ + r.maxZ) / 2);
   const w = portrait ? r.maxZ - r.minZ : r.maxX - r.minX;
@@ -25,7 +25,7 @@ function frame(r: Rect, isZone: boolean, camera: THREE.PerspectiveCamera, aspect
   const hfov = 2 * Math.atan(Math.tan(vfov / 2) * aspect);
   const needV = (d * 0.72 + 1.2) / 2 / Math.tan(vfov / 2);
   const needH = (w + 1.0) / 2 / Math.tan(hfov / 2);
-  const dist = Math.max(MIN_DIST + 2, Math.max(needV, needH) * (isZone ? 1.15 : 1.2) * (portrait && !isZone ? 1.08 : 1));
+  const dist = Math.max(MIN_DIST + 2, Math.max(needV, needH) * (isZone ? 1.15 : 1.2) * (portrait && !isZone ? 1.08 : 1) * margin);
   return { target: center, position: center.clone().addScaledVector(portrait ? VIEW_PORTRAIT : VIEW_LANDSCAPE, dist), dist };
 }
 
@@ -66,7 +66,12 @@ export function CameraRig({ plan, view, offsets, focusZone, follow, defaultView,
 
   const bounds = useMemo(() => visibleBounds(plan, view, offsets), [plan, view, offsets]);
   const boundsKey = `${bounds.minX.toFixed(1)},${bounds.maxX.toFixed(1)},${bounds.minZ.toFixed(1)},${bounds.maxZ.toFixed(1)}`;
-  const overview = useMemo(() => frame(bounds, false, camera, Math.max(0.2, size.width / Math.max(1, size.height))), [bounds, camera, size.width, size.height]);
+  // Deep exploded views need extra room: the nearer row of floors is magnified by perspective.
+  const depthRatio = (bounds.maxZ - bounds.minZ) / Math.max(1, bounds.maxX - bounds.minX);
+  const overview = useMemo(
+    () => frame(bounds, false, camera, Math.max(0.2, size.width / Math.max(1, size.height)), view === "all" ? 1 + Math.min(0.35, depthRatio * 0.4) : 1),
+    [bounds, camera, size.width, size.height, view, depthRatio],
+  );
   const maxDistance = Math.max(48, overview.dist * 1.35);
 
   // Department focus on another floor → ask the page to switch floors.

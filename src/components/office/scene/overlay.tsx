@@ -46,12 +46,13 @@ export class OverlayRegistry {
   }
 
   /** Writes a screen position (CSS px) — skipped when unchanged to avoid style churn. */
-  place(el: HTMLElement, x: number, y: number, z: number, visible: boolean) {
-    const key = visible ? `${x.toFixed(1)}|${y.toFixed(1)}|${z}` : "hidden";
+  place(el: HTMLElement, x: number, y: number, z: number, visible: boolean, compact = false) {
+    const key = visible ? `${x.toFixed(1)}|${y.toFixed(1)}|${z}|${compact ? 1 : 0}` : "hidden";
     if (this.last.get(el) === key) return;
     this.last.set(el, key);
     if (!visible) { el.style.visibility = "hidden"; return; }
     el.style.visibility = "visible";
+    el.dataset.compact = compact ? "1" : "0";
     el.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
     el.style.zIndex = String(z);
   }
@@ -95,7 +96,7 @@ function AgentLabel({ profile, status, selected, dimmed, speaking, locale, bind,
   const name = locale === "en" ? `${profile.nameAr} · ${profile.nameEn}` : profile.nameAr;
   const statusText = STATUS_TEXT[status][locale];
   return (
-    <div ref={bind} className="absolute left-0 top-0" style={{ visibility: "hidden" }}>
+    <div ref={bind} className="group absolute left-0 top-0" style={{ visibility: "hidden" }}>
       <button
         type="button"
         onClick={() => { if (!dimmed) onSelect(profile.slug); }}
@@ -106,6 +107,8 @@ function AgentLabel({ profile, status, selected, dimmed, speaking, locale, bind,
         data-agent-label={profile.slug}
         className={[
           "pointer-events-auto absolute left-0 top-0 flex -translate-x-1/2 -translate-y-1/2 select-none items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-[12px] font-semibold shadow-md backdrop-blur transition-[opacity,scale,box-shadow,background-color] duration-200",
+          // Crowded labels collapse to a status-dot chip (still focusable and named for assistive tech).
+          "group-data-[compact=1]:gap-0 group-data-[compact=1]:p-1",
           "outline-none focus-visible:ring-2 focus-visible:ring-offset-1",
           selected ? "scale-110 bg-white text-slate-900" : "bg-white/85 text-slate-800 hover:bg-white",
           dimmed ? "cursor-default opacity-40" : "cursor-pointer",
@@ -121,10 +124,10 @@ function AgentLabel({ profile, status, selected, dimmed, speaking, locale, bind,
           className={`size-2 shrink-0 rounded-full ${status === "working" || status === "meeting" ? "animate-soft-pulse" : ""}`}
           style={{ background: status === "working" ? profile.color : STATUS_COLORS[status] }}
         />
-        <span dir="auto">{name}</span>
-        {status === "error" && <span aria-hidden className="grid size-3.5 place-items-center rounded-full bg-red-500 text-[9px] font-bold text-white">!</span>}
+        <span dir="auto" className="group-data-[compact=1]:hidden">{name}</span>
+        {status === "error" && <span aria-hidden className="grid size-3.5 group-data-[compact=1]:hidden place-items-center rounded-full bg-red-500 text-[9px] font-bold text-white">!</span>}
         {speaking && (
-          <span aria-hidden className="flex h-3 items-end gap-[2px]">
+          <span aria-hidden className="flex h-3 items-end gap-[2px] group-data-[compact=1]:hidden">
             {[0, 1, 2].map((i) => (
               <span key={i} className="w-[3px] animate-soft-pulse rounded-full" style={{ height: `${6 + i * 3}px`, background: profile.color, animationDelay: `${i * 0.18}s` }} />
             ))}

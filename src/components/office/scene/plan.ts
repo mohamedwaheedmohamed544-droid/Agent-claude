@@ -330,7 +330,6 @@ function meetingPod(room: OfficeLayoutSpec["meetingRooms"][number]): Pod {
       fp.meetingScreens.push({ zone: room.key, x: x0 + w - 0.12, y: 1.55, z: tcz, yaw: -H, width: screenW, height: screenW * 0.56, freestanding: false });
       const n = Math.max(1, Math.round(length / 1.8));
       for (let i = 0; i < n; i++) fp.pendants.push(P(tcx - length / 2 + (length / n) * (i + 0.5), tcz));
-      plant(fp, x0 + 0.45, z0 + 0.6, 0.8);
     },
   };
 }

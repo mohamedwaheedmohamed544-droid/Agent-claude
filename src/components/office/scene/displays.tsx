@@ -313,7 +313,7 @@ export function OfficeDisplays({ plan, view, offsets, profiles, presence, lastSt
     <group>
       {plan.floors.map((fp) => (
         <group key={`${plan.revision}:${fp.index}`} position={[offsets[fp.index]?.x ?? 0, 0, offsets[fp.index]?.z ?? 0]} visible={view === "all" || view === fp.index}>
-          {view === "all" && <FloorCaption floor={fp.index} x={fp.bounds.minX} z={fp.bounds.minZ - 0.6} />}
+          {view === "all" && <FloorCaption floor={fp.index} x={fp.bounds.minX} z={fp.bounds.maxZ + 2.2} />}
           {fp.signs.map((d) => {
             const z = plan.zones.get(d.zone);
             return <DepartmentSign key={d.zone} spec={d} name={z?.name ?? d.zone} nameAr={z?.nameAr ?? ""} color={z?.color ?? "#6366f1"} members={membersByZone.get(d.zone) ?? EMPTY} presence={byAgent} locale={locale} />;
@@ -351,8 +351,8 @@ function FloorCaption({ floor, x, z }: { floor: number; x: number; z: number }) 
     texture.needsUpdate = true;
   }, [ctx, texture, material, floor, fonts]);
   return (
-    <mesh position={[x + 3.2, 0.02, z - 0.8]} rotation-x={-Math.PI / 2} material={material} raycast={() => null}>
-      <planeGeometry args={[6.4, 1.2]} />
+    <mesh position={[x + 4.8, 0.02, z]} rotation-x={-Math.PI / 2} material={material} raycast={() => null}>
+      <planeGeometry args={[9.6, 1.8]} />
     </mesh>
   );
 }

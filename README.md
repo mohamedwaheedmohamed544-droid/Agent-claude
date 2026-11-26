@@ -23,6 +23,8 @@ See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the design, task lifecy
 | Deliverables | Word (.docx, RTL-aware) and Excel (.xlsx) generation, email drafts, reports |
 | Integrations | Gmail & Outlook (search, send), Google & Outlook Calendar, Google Drive (search, upload) via OAuth; webhooks; Claude web search |
 | Virtual Office | Live 3D office (React Three Fiber) where each agent is an Arabic-named character — راشد (orchestrator), باحث, رائد, بيان, قلم, بصيرة, تميم, أثر — driven only by real backend events: delegation walks, working/reading/typing at desks, real agent-to-agent messages as speech bubbles, real meetings (2 rounds of agent contributions + chair's decisions and action items) in the glass meeting room. Live via Server-Sent Events; agent panels with assign/meeting/pause actions through the normal approval and permission system; dashboard, department, list and task views; WebGL fallback |
+| Agent Management | Database-driven workforce — create, edit (versioned), duplicate, activate/deactivate, archive/restore, delete agents from the UI; Agent Builder (identity, avatar, responsibilities, Claude model, skills, tools, permission ceiling, relationships, office placement); Skills Registry, 12 templates, import/export, departments; "Ask راشد" natural-language design with preview + confirmation. A Runtime Factory compiles each agent from its stored config; the orchestrator discovers active agents per request |
+| Adaptive office | Office generated from data: compact → standard → expanded → large → multi-floor (auto or manual), workstations allocated per department, agents walk in/out live as the workforce changes |
 | Control | Emergency stop, per-tool enable/disable, agent prompt/tool/model customisation with version history, roles (owner/admin/member/viewer), audit log, usage & cost analytics, system health |
 
 ## Setup
@@ -64,8 +66,8 @@ Then set `GOOGLE_CLIENT_ID/SECRET`, `MICROSOFT_CLIENT_ID/SECRET` (and optionally
 ## Testing
 
 ```bash
-npm test                 # 85 unit/integration tests against a real Postgres test DB (mock LLM)
-npm run build && npm run test:e2e   # 16 Playwright tests: API, desktop UI, mobile — against `next start`
+npm test                 # 101 unit/integration tests against a real Postgres test DB (mock LLM)
+npm run build && npm run test:e2e   # 24 Playwright tests: API, desktop UI, mobile — against `next start`
 ```
 
 Tests need a local PostgreSQL with pgvector; databases are configured by `TEST_DATABASE_URL` (default

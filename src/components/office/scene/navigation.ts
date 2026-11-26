@@ -2,13 +2,6 @@ import { GLASS_THICKNESS, WALL_THICKNESS, type FloorPlan, type Rect, type Vec2, 
 
 const SQRT2 = Math.SQRT2;
 
-function segmentsIntersect(ax: number, az: number, bx: number, bz: number, cx: number, cz: number, dx: number, dz: number): boolean {
-  const d = (bx - ax) * (dz - cz) - (bz - az) * (dx - cx);
-  if (Math.abs(d) < 1e-12) return false;
-  const t = ((cx - ax) * (dz - cz) - (cz - az) * (dx - cx)) / d;
-  const u = ((cx - ax) * (bz - az) - (cz - az) * (bx - ax)) / d;
-  return t >= 0 && t <= 1 && u >= 0 && u <= 1;
-}
 
 function distToSegment(px: number, pz: number, a: Vec2, b: Vec2): number {
   const dx = b.x - a.x, dz = b.z - a.z;
@@ -121,15 +114,27 @@ export class NavGrid {
     }
   }
 
-  /** True if the segment a→b intersects any wall or partition (doorways are gaps between segments). */
+  /**
+   * True if moving a→b would pass through (or press against) a wall or partition. Walls are extended past their
+   * ends so door jambs keep clearance. Side-aware: a crossing needs a change of side; getting closer than 3 cm
+   * to a wall is refused; moving away from a wall is always allowed (so nobody can get pinned on one).
+   */
   crossesWall(ax: number, az: number, bx: number, bz: number): boolean {
     for (const w of this.walls) {
       const pad = (w.kind === "glass" ? GLASS_THICKNESS : WALL_THICKNESS) / 2 + 0.12;
-      // Extend each wall slightly past its ends so characters cannot clip door jambs.
       const dx = w.b.x - w.a.x, dz = w.b.z - w.a.z;
       const len = Math.hypot(dx, dz) || 1;
-      const ux = (dx / len) * pad, uz = (dz / len) * pad;
-      if (segmentsIntersect(ax, az, bx, bz, w.a.x - ux, w.a.z - uz, w.b.x + ux, w.b.z + uz)) return true;
+      const ux = dx / len, uz = dz / len;
+      // Perpendicular signed distances and along-wall coordinates of both points.
+      const da = (ax - w.a.x) * -uz + (az - w.a.z) * ux, db = (bx - w.a.x) * -uz + (bz - w.a.z) * ux;
+      const sa = (ax - w.a.x) * ux + (az - w.a.z) * uz, sb = (bx - w.a.x) * ux + (bz - w.a.z) * uz;
+      if ((da > 0 && db < 0) || (da < 0 && db > 0)) {
+        const t = da / (da - db);
+        const s = sa + (sb - sa) * t;
+        if (s >= -pad && s <= len + pad) return true;
+      } else if (Math.abs(db) < 0.03 && Math.abs(db) < Math.abs(da) && sb >= -pad && sb <= len + pad) {
+        return true;
+      }
     }
     return false;
   }
@@ -174,6 +179,7 @@ export class NavGrid {
 
   /** Straight segment stays on walkable cells (sampled every ~cell/3). */
   lineOfSight(ax: number, az: number, bx: number, bz: number, extra?: (idx: number) => boolean): boolean {
+    if (this.crossesWall(ax, az, bx, bz)) return false; // exact check, including door-jamb clearance
     const len = Math.hypot(bx - ax, bz - az);
     const steps = Math.max(1, Math.ceil(len / (this.cell / 3)));
     for (let i = 0; i <= steps; i++) {
@@ -189,8 +195,11 @@ export class NavGrid {
    * exact start and ends at the exact goal. `extra` marks temporarily blocked cells (e.g. standing characters).
    */
   findPath(sx: number, sz: number, gx: number, gz: number, extra?: (idx: number) => boolean): Vec2[] | null {
-    const start = this.nearestWalkable(sx, sz, 6);
-    const goal = this.nearestWalkable(gx, gz, 8, extra) >= 0 ? this.nearestWalkable(gx, gz, 8, extra) : this.nearestWalkable(gx, gz, 8);
+    // Snap to the nearest free cell on the same side of any wall (never "through the glass").
+    const sameSide = (px: number, pz: number) => (idx: number) => { const c = this.centerOf(idx); return this.crossesWall(px, pz, c.x, c.z); };
+    const start = this.nearestWalkable(sx, sz, 6, sameSide(sx, sz));
+    const goalBlocked = (idx: number) => (extra ? extra(idx) : false) || sameSide(gx, gz)(idx);
+    const goal = this.nearestWalkable(gx, gz, 8, goalBlocked) >= 0 ? this.nearestWalkable(gx, gz, 8, goalBlocked) : this.nearestWalkable(gx, gz, 8, sameSide(gx, gz));
     if (start < 0 || goal < 0) return null;
     if (start === goal) return [{ x: sx, z: sz }, { x: gx, z: gz }];
 

@@ -198,7 +198,7 @@ export function Characters({ presence, selectedAgent, dimmedAgents, view, offset
       }
     }
 
-    // Declutter: selected first, then nearest; a label that would overlap an already placed one is hidden.
+    // Declutter: selected first, then nearest; a label that would overlap an already placed one shrinks to a dot.
     cands.sort((p, q) => (p.pinned === q.pinned ? p.depth - q.depth : p.pinned ? -1 : 1));
     const boxes = placedBoxes.current;
     boxes.length = 0;
@@ -208,8 +208,9 @@ export function Characters({ presence, selectedAgent, dimmedAgents, view, offset
       for (let i = 0; i < boxes.length && free; i += 4) {
         if (x0 < boxes[i + 2] && x1 > boxes[i] && y0 < boxes[i + 3] && y1 > boxes[i + 1]) free = false;
       }
-      if (free || cd.pinned) boxes.push(x0, y0, x1, y1);
-      overlay.place(cd.el, cd.x, cd.y, 100 + Math.round((1 - cd.depth) * 5000), free || cd.pinned);
+      const full = free || cd.pinned;
+      if (full) boxes.push(x0, y0, x1, y1);
+      overlay.place(cd.el, cd.x, cd.y, (full ? 1000 : 100) + Math.round((1 - cd.depth) * 5000), true, !full);
     }
 
     // End-to-end test hook (throttled).

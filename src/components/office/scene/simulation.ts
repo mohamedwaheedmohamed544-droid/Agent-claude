@@ -396,6 +396,13 @@ export class OfficeSim {
     return { key: `home:${a.slug}:entrance`, zone: a.profile.deskZone, floor: 0, seat: null, spot };
   }
 
+  /** Elevator/stair core of a floor (transit point between floors). */
+  private coreSpot(floor: number): Spot {
+    const f = this.plan?.floors[floor];
+    return f?.coreSpot ?? f?.entrance ?? { x: 0, z: 1, yaw: 0 };
+  }
+
+  /** Where a removed agent leaves the office: the entrance on the ground floor, the elevator elsewhere. */
   private exitSpot(floor: number): Spot {
     const f = this.plan?.floors[floor];
     return (floor === 0 ? f?.entrance : null) ?? f?.coreSpot ?? f?.entrance ?? { x: 0, z: 1, yaw: 0 };
@@ -704,7 +711,7 @@ export class OfficeSim {
       default: {
         // Different floor: walk to this floor's elevator core first.
         const changeFloor = g.floor !== a.floor;
-        const entry: Vec2 | null = changeFloor ? this.exitSpot(a.floor) : g.seat ? g.seat.approach : g.spot;
+        const entry: Vec2 | null = changeFloor ? this.coreSpot(a.floor) : g.seat ? g.seat.approach : g.spot;
         if (!entry) return;
         const d = Math.hypot(entry.x - a.x, entry.z - a.z);
         if (d < ARRIVE || (a.mode === "stand" && a.arrived && d < 0.5)) {
@@ -759,7 +766,9 @@ export class OfficeSim {
     if (!a.path) this.planPath(a, entry, false);
     const path = a.path!;
     let wp = path[a.pathIdx];
-    while (a.pathIdx < path.length - 1 && Math.hypot(wp.x - a.x, wp.z - a.z) < 0.3) wp = path[++a.pathIdx];
+    // Advance early only when the next waypoint is in clear line of sight (no corner-cutting at door jambs).
+    while (a.pathIdx < path.length - 1 && Math.hypot(wp.x - a.x, wp.z - a.z) < 0.3 && !nav.crossesWall(a.x, a.z, path[a.pathIdx + 1].x, path[a.pathIdx + 1].z)) wp = path[++a.pathIdx];
+    if (Math.hypot(wp.x - a.x, wp.z - a.z) < 0.05 && a.pathIdx < path.length - 1) wp = path[++a.pathIdx];
     const dx = wp.x - a.x, dz = wp.z - a.z;
     const dist = Math.hypot(dx, dz) || 1e-6;
     let dirX = dx / dist, dirZ = dz / dist;

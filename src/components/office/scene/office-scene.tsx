@@ -82,7 +82,6 @@ function useDarkTheme() {
 /** Stops rendering entirely while the tab is hidden. */
 function VisibilityLoop() {
   const setFrameloop = useThree((s) => s.setFrameloop);
-  const glDbg = useThree((s) => s.gl); useEffect(() => { (window as unknown as Record<string, unknown>).__DBG_GL = glDbg; }, [glDbg]); // DEBUG-REMOVE
   useEffect(() => {
     const on = () => setFrameloop(document.hidden ? "never" : "always");
     on();
