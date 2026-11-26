@@ -123,10 +123,9 @@ function AgentLabel({ profile, status, selected, dimmed, speaking, locale, bind,
   );
 }
 
-export function AgentOverlay({ sim, registry, profiles, statusBy, selectedAgent, dimmed, locale, onSelectAgent }: {
+export function AgentOverlay({ sim, registry, statusBy, selectedAgent, dimmed, locale, onSelectAgent }: {
   sim: OfficeSim;
   registry: OverlayRegistry;
-  profiles: AgentProfile[];
   statusBy: Map<string, AgentStatus>;
   selectedAgent: string | null;
   dimmed: Set<string>;
@@ -135,24 +134,22 @@ export function AgentOverlay({ sim, registry, profiles, statusBy, selectedAgent,
 }) {
   const [, bump] = useReducer((x: number) => x + 1, 0);
   useEffect(() => sim.subscribe(bump), [sim]);
+  const roster = sim.list.filter((a) => !a.removed);
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden" style={{ zIndex: 1 }}>
-      {profiles.map((p) => {
-        const a = sim.agents.get(p.slug);
-        return (
-          <SpeechBubble key={`b-${p.slug}`} bubble={a?.bubble ? { id: a.bubble.id, text: a.bubble.text } : null} accent={p.color} bind={registry.bind("bubble", p.slug)} />
-        );
-      })}
-      {profiles.map((p) => (
+      {roster.map((a) => (
+        <SpeechBubble key={`b-${a.slug}`} bubble={a.bubble ? { id: a.bubble.id, text: a.bubble.text } : null} accent={a.profile.color} bind={registry.bind("bubble", a.slug)} />
+      ))}
+      {roster.filter((a) => !a.leaving).map((a) => (
         <AgentLabel
-          key={`l-${p.slug}`}
-          profile={p}
-          status={statusBy.get(p.slug) ?? "idle"}
-          selected={selectedAgent === p.slug}
-          dimmed={dimmed.has(p.slug)}
-          speaking={sim.isSpeaking(p.slug)}
+          key={`l-${a.slug}`}
+          profile={a.profile}
+          status={statusBy.get(a.slug) ?? "idle"}
+          selected={selectedAgent === a.slug}
+          dimmed={dimmed.has(a.slug)}
+          speaking={sim.isSpeaking(a.slug)}
           locale={locale}
-          bind={registry.bind("label", p.slug)}
+          bind={registry.bind("label", a.slug)}
           onSelect={onSelectAgent}
         />
       ))}

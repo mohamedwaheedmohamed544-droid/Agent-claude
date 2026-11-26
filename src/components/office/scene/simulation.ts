@@ -1,31 +1,28 @@
 import type {
   ActivityEvent, AgentMessage, AgentPresence, AgentProfile, AgentStatus, CharacterAnimation, OfficeZone,
 } from "@/lib/office/types";
-import {
-  DESK_BY_ZONE, LOUNGE_SEATS, MEETING_HEAD_SEAT, MEETING_SIDE_SEATS, ZONE_RECTS,
-  type DeskSpec, type Seat, type Spot, type Vec2,
-} from "./layout";
+import { rectCenter, type DeskPlan, type OfficePlan, type Seat, type Spot, type Vec2 } from "./plan";
 import { NavGrid } from "./navigation";
-import { CHANNELS, addLayers, computeTargetPose, dampPose } from "./poses";
+import { CHANNELS, addLayers, computeTargetPose, dampPose, type IdleVariant } from "./poses";
 import { HIP_HEIGHT, REF_HEIGHT } from "./character-model";
 
 /**
- * Behaviour layer: turns real backend state (presence = persistent, events = transient) into character
- * placement, movement and animation. Pure TypeScript, no Three.js objects — the React layer reads the
- * resulting positions and pose arrays every frame.
+ * Behaviour layer: turns real backend state (roster + presence = persistent, events = transient) into
+ * character placement, movement and animation across one or more floors. Pure TypeScript, no Three.js
+ * objects — the React layer reads positions and pose arrays every frame.
  */
 
-export const ORCHESTRATOR = "orchestrator";
 const WALK_SPEED = 1.3;
 const SIT_TIME = 0.85;
 const RISE_TIME = 0.7;
+const FADE_TIME = 0.6;
 const ARRIVE = 0.12;
 const LOUNGE_AFTER_MS = 60_000;
 const TOOL_ANIM_SECONDS = 6;
 const CELEBRATE_SECONDS = 2.2;
 const ERROR_SECONDS = 4;
 const QUEUE_MAX_AGE_MS = 45_000;
-const VISIT_TIMEOUT = 35;
+const VISIT_TIMEOUT = 45;
 export const BUBBLE_CHARS = 160;
 
 const READING_TOOLS = new Set(["knowledge_search", "read_file", "web_search", "fetch_url", "list_files", "email_search", "drive_search"]);
@@ -54,8 +51,9 @@ function wrapAngle(a: number) {
   while (a < -Math.PI) a += Math.PI * 2;
   return a;
 }
+const seatKey = (s: Seat) => `seat:${s.id}@${s.floor}:${s.x.toFixed(2)},${s.z.toFixed(2)}`;
 
-interface Goal { key: string; zone: OfficeZone; seat: Seat | null; spot: Spot | null }
+interface Goal { key: string; zone: OfficeZone; floor: number; seat: Seat | null; spot: Spot | null; exit?: boolean }
 
 interface Visit {
   kind: "delegation" | "message";
@@ -70,23 +68,25 @@ interface Visit {
   talkUntil: number;
 }
 
-type Mode = "stand" | "walk" | "sitting" | "seated" | "rising";
+type Mode = "stand" | "walk" | "sitting" | "seated" | "rising" | "appearing" | "vanishing";
 
 export interface AgentRuntime {
   slug: string;
   index: number;
   profile: AgentProfile;
+  /** Overall character scale (height × layout.characterScale). */
   scale: number;
-  desk: DeskSpec | null;
-  meetingSeat: Seat;
-  /** Seat claimed for the current meeting (released when the agent leaves the meeting). */
-  meetingSeatTaken: Seat | null;
-  loungeSeat: Seat;
-  homeSpot: Spot;
+  desk: DeskPlan | null;
 
+  floor: number;
   x: number; z: number; yaw: number; desiredYaw: number;
   speed: number;
   mode: Mode;
+  /** 0 = invisible, 1 = fully visible (spawn, exit and floor changes fade). */
+  fade: number;
+  transitFloor: number | null;
+  leaving: boolean;
+  removed: boolean;
   seat: Seat | null;
   sit: number;
   trans: number;
@@ -102,9 +102,14 @@ export interface AgentRuntime {
   ghostUntil: number;
 
   status: AgentStatus;
+  presenceZone: OfficeZone | null;
   meetingId: string | null;
+  waitingFor: string | null;
   idleSinceMs: number;
   placed: boolean;
+  meetingSeat: Seat | null;
+  loungeSeat: Seat | null;
+  awaySpot: { key: string; spot: Spot } | null;
 
   toolAnim: CharacterAnimation | null; toolUntil: number;
   celebrateUntil: number; errorUntil: number;
@@ -115,6 +120,7 @@ export interface AgentRuntime {
   bubble: { id: number; text: string; until: number } | null;
 
   anim: CharacterAnimation;
+  idleVariant: IdleVariant;
   animStart: number;
   look: number;
   phase: number;
@@ -127,68 +133,143 @@ export interface AgentRuntime {
 
 export interface CharacterSnapshot {
   zone: OfficeZone;
+  floor: number;
   position: [number, number];
   animation: CharacterAnimation;
   walking: boolean;
   bubble: string | null;
 }
 
+export interface SimSettings { characterScale: number; ambientLounge: boolean }
+
 export class OfficeSim {
-  readonly nav = new NavGrid();
   readonly agents = new Map<string, AgentRuntime>();
   list: AgentRuntime[] = [];
   time = 0;
+  plan: OfficePlan | null = null;
+  private navs: NavGrid[] = [];
+  private settings: SimSettings = { characterScale: 1, ambientLounge: true };
   private messagesById = new Map<string, AgentMessage>();
   private messages: AgentMessage[] = [];
   private lastEventId: string | null = null;
   private baseline = false;
+  private initialized = false;
   private seenMessageVisits = new Set<string>();
   private bubbleSeq = 0;
+  private nextIndex = 0;
   private listeners = new Set<() => void>();
   private dirty = false;
+  /** Bumped whenever characters are added or finally removed. */
+  rosterVersion = 0;
 
   subscribe(fn: () => void) {
     this.listeners.add(fn);
     return () => { this.listeners.delete(fn); };
   }
 
+  private emit() {
+    this.dirty = false;
+    this.listeners.forEach((fn) => fn());
+  }
+
   // ───────────────────────── Inputs ─────────────────────────
 
+  /** New floor plan (only when the layout revision changes): rebuild navigation and re-resolve desks. */
+  setPlan(plan: OfficePlan) {
+    if (this.plan === plan) return;
+    this.plan = plan;
+    this.navs = plan.floors.map((f) => new NavGrid(f));
+    for (const a of this.list) {
+      if (a.floor >= plan.floors.length) a.floor = 0;
+      a.path = null;
+      a.awaySpot = null;
+      a.meetingSeat = null;
+      a.loungeSeat = null;
+      if (a.visit) a.visit.goal = null;
+    }
+    this.assignDesks();
+    for (const a of this.list) if (a.visit && a.visit.stage === "go") a.visit.goal = this.visitGoal(a, a.visit);
+  }
+
+  setSettings(s: SimSettings) {
+    const scaleChanged = s.characterScale !== this.settings.characterScale;
+    this.settings = s;
+    if (scaleChanged) for (const a of this.list) a.scale = this.scaleOf(a.profile);
+  }
+
+  private scaleOf(p: AgentProfile) {
+    return (p.appearance.height / REF_HEIGHT) * Math.min(1.25, Math.max(0.8, this.settings.characterScale || 1));
+  }
+
+  /** Diff the roster by slug: new agents walk in, removed agents walk out, the rest keep their state. */
   setProfiles(profiles: AgentProfile[]) {
-    const usedDesks = new Set<OfficeZone>();
-    let side = 0;
-    const next: AgentRuntime[] = [];
-    profiles.forEach((profile, index) => {
-      const isChair = profile.slug === ORCHESTRATOR;
-      const meetingSeat = isChair ? MEETING_HEAD_SEAT : MEETING_SIDE_SEATS[side++ % MEETING_SIDE_SEATS.length];
-      const loungeSeat = LOUNGE_SEATS[index % LOUNGE_SEATS.length];
-      const deskCandidate = DESK_BY_ZONE.get(profile.deskZone) ?? null;
-      const desk = deskCandidate && !usedDesks.has(deskCandidate.zone) ? deskCandidate : null;
-      if (desk) usedDesks.add(desk.zone);
-      const homeSpot = desk ? desk.stand : this.zoneSpot(profile.deskZone);
+    const incoming = new Set(profiles.map((p) => p.slug));
+    let changed = false;
+    for (const profile of profiles) {
       const existing = this.agents.get(profile.slug);
       if (existing) {
-        Object.assign(existing, { index, profile, desk, meetingSeat, loungeSeat, homeSpot, scale: profile.appearance.height / REF_HEIGHT });
-        next.push(existing);
-        return;
+        existing.profile = profile;
+        existing.scale = this.scaleOf(profile);
+        if (existing.leaving) { existing.leaving = false; changed = true; }
+        continue;
       }
-      const a: AgentRuntime = {
-        slug: profile.slug, index, profile, scale: profile.appearance.height / REF_HEIGHT,
-        desk, meetingSeat, meetingSeatTaken: null, loungeSeat, homeSpot,
-        x: homeSpot.x, z: homeSpot.z, yaw: homeSpot.yaw, desiredYaw: homeSpot.yaw,
-        speed: 0, mode: "stand", seat: null, sit: 0, trans: 0, transFrom: { x: 0, z: 0 },
-        goal: null, arrived: false, path: null, pathIdx: 0, replanAt: 0, waitT: 0, progressT: 0, progressDist: Infinity, ghostUntil: 0,
-        status: "idle", meetingId: null, idleSinceMs: Date.now(), placed: false,
-        toolAnim: null, toolUntil: 0, celebrateUntil: 0, errorUntil: 0, speakUntil: 0,
-        listenTo: null, listenUntil: 0, visit: null, queue: [], bubble: null,
-        anim: "idle", animStart: 0, look: 0, phase: 0, gait: 0,
-        pose: new Float32Array(CHANNELS), target: new Float32Array(CHANNELS), out: new Float32Array(CHANNELS), snapPose: true,
-      };
+      const a = this.createAgent(profile);
       this.agents.set(profile.slug, a);
-      next.push(a);
-    });
-    for (const slug of [...this.agents.keys()]) if (!profiles.some((p) => p.slug === slug)) this.agents.delete(slug);
-    this.list = next;
+      this.list.push(a);
+      changed = true;
+    }
+    for (const a of this.list) {
+      if (incoming.has(a.slug) || a.leaving) continue;
+      if (!this.initialized || !a.placed || a.fade <= 0) { a.removed = true; continue; }
+      a.leaving = true;
+      a.visit = null;
+      a.queue = [];
+    }
+    if (this.list.some((a) => a.removed)) this.purge();
+    this.assignDesks();
+    // Newcomers after the initial placement walk in from the entrance / elevator.
+    for (const a of this.list) if (!a.placed && this.initialized && this.plan) this.spawn(a);
+    if (changed) { this.rosterVersion++; this.dirty = true; }
+  }
+
+  private createAgent(profile: AgentProfile): AgentRuntime {
+    return {
+      slug: profile.slug, index: this.nextIndex++, profile, scale: this.scaleOf(profile), desk: null,
+      floor: 0, x: 0, z: 0, yaw: 0, desiredYaw: 0, speed: 0, mode: "stand", fade: 1, transitFloor: null, leaving: false, removed: false,
+      seat: null, sit: 0, trans: 0, transFrom: { x: 0, z: 0 },
+      goal: null, arrived: false, path: null, pathIdx: 0, replanAt: 0, waitT: 0, progressT: 0, progressDist: Infinity, ghostUntil: 0,
+      status: "idle", presenceZone: null, meetingId: null, waitingFor: null, idleSinceMs: Date.now(), placed: false,
+      meetingSeat: null, loungeSeat: null, awaySpot: null,
+      toolAnim: null, toolUntil: 0, celebrateUntil: 0, errorUntil: 0, speakUntil: 0,
+      listenTo: null, listenUntil: 0, visit: null, queue: [], bubble: null,
+      anim: "idle", idleVariant: null, animStart: 0, look: 0, phase: 0, gait: 0,
+      pose: new Float32Array(CHANNELS), target: new Float32Array(CHANNELS), out: new Float32Array(CHANNELS), snapPose: true,
+    };
+  }
+
+  private purge() {
+    for (const a of this.list) if (a.removed) this.agents.delete(a.slug);
+    this.list = this.list.filter((a) => !a.removed);
+    this.rosterVersion++;
+    this.dirty = true;
+  }
+
+  /** Desk = the profile's workstation, else the first free desk of its department. */
+  private assignDesks() {
+    const plan = this.plan;
+    if (!plan) return;
+    const taken = new Set<string>();
+    const active = this.list.filter((a) => !a.leaving);
+    for (const a of active) {
+      const d = a.profile.workstationId ? plan.desks.get(a.profile.workstationId) : undefined;
+      if (d && !taken.has(d.id)) { a.desk = d; taken.add(d.id); } else a.desk = null;
+    }
+    for (const a of active) {
+      if (a.desk) continue;
+      const free = (plan.deptDesks.get(a.profile.deskZone) ?? []).find((d) => !taken.has(d.id) && (!d.agentSlug || d.agentSlug === a.slug))
+        ?? (plan.deptDesks.get(a.profile.deskZone) ?? []).find((d) => !taken.has(d.id));
+      if (free) { a.desk = free; taken.add(free.id); }
+    }
   }
 
   setPresence(presence: AgentPresence[]) {
@@ -202,16 +283,17 @@ export class OfficeSim {
         const since = p ? Date.parse(p.since) : NaN;
         a.idleSinceMs = Number.isFinite(since) ? Math.min(now, since) : a.status === "idle" && a.placed ? a.idleSinceMs : now;
       }
-      if (status === "meeting" && status !== a.status && a.visit) this.endVisit(a);
+      if (status === "meeting" && status !== a.status && a.visit) a.visit = null;
       a.status = status;
+      a.presenceZone = p?.zone ?? null;
       a.meetingId = p?.meetingId ?? null;
-      if (status !== "meeting" && (p?.zone ?? null) !== "meeting_room") a.meetingSeatTaken = null;
-      this.presenceZone.set(a.slug, p?.zone ?? null);
-      if (!a.placed && presence.length > 0) this.place(a);
+      a.waitingFor = p?.waitingFor ?? null;
+    }
+    if (!this.initialized && this.plan) {
+      this.initialized = true;
+      for (const a of this.list) if (!a.placed) this.place(a);
     }
   }
-  private presenceZone = new Map<string, OfficeZone | null>();
-  private awaySpots = new Map<string, { zone: OfficeZone; spot: Spot }>();
 
   setMessages(messages: AgentMessage[]) {
     this.messages = messages;
@@ -234,7 +316,7 @@ export class OfficeSim {
 
   private handleEvent(e: ActivityEvent) {
     const a = this.agents.get(e.agent);
-    if (!a) return;
+    if (!a || a.leaving) return;
     const messageId = typeof e.payload.messageId === "string" ? e.payload.messageId : e.payload.messageId != null ? String(e.payload.messageId) : null;
     switch (e.type) {
       case "tool_used": {
@@ -274,7 +356,7 @@ export class OfficeSim {
         break;
       }
       case "task_completed":
-        if (a.slug === ORCHESTRATOR && a.status !== "meeting") { a.celebrateUntil = this.time + CELEBRATE_SECONDS; }
+        if (a.profile.isOrchestrator && a.status !== "meeting") a.celebrateUntil = this.time + CELEBRATE_SECONDS;
         break;
       case "step_failed":
         a.errorUntil = this.time + ERROR_SECONDS;
@@ -291,12 +373,32 @@ export class OfficeSim {
 
   // ───────────────────────── Helpers ─────────────────────────
 
-  private zoneSpot(zone: OfficeZone): Spot {
-    const r = ZONE_RECTS[zone];
-    const cx = (r.minX + r.maxX) / 2, cz = (r.minZ + r.maxZ) / 2;
-    const idx = this.nav.nearestWalkable(cx, cz, 12);
-    const c = idx >= 0 ? this.nav.centerOf(idx) : { x: cx, z: cz };
-    return { x: c.x, z: c.z, yaw: 0 };
+  private nav(floor: number): NavGrid | null {
+    return this.navs[floor] ?? this.navs[0] ?? null;
+  }
+
+  private zoneSpot(zone: OfficeZone): { spot: Spot; floor: number } | null {
+    const info = this.plan?.zones.get(zone);
+    if (!info) return null;
+    const c = rectCenter(info.rect);
+    const nav = this.nav(info.floor);
+    const idx = nav ? nav.nearestWalkable(c.x, c.z, 14) : -1;
+    const p = idx >= 0 && nav ? nav.centerOf(idx) : c;
+    return { spot: { x: p.x, z: p.z, yaw: 0 }, floor: info.floor };
+  }
+
+  private homeGoal(a: AgentRuntime): Goal {
+    if (a.desk) return { key: `stand:${a.desk.id}@${a.desk.stand.x.toFixed(2)},${a.desk.stand.z.toFixed(2)}`, zone: a.desk.zone, floor: a.desk.floor, seat: null, spot: a.desk.stand };
+    const z = this.zoneSpot(a.profile.deskZone);
+    if (z) return { key: `home:${a.slug}:${z.spot.x.toFixed(2)},${z.spot.z.toFixed(2)}`, zone: a.profile.deskZone, floor: z.floor, seat: null, spot: z.spot };
+    const f = this.plan?.floors[0];
+    const spot = f?.entrance ?? f?.coreSpot ?? { x: 0, z: 2, yaw: 0 };
+    return { key: `home:${a.slug}:entrance`, zone: a.profile.deskZone, floor: 0, seat: null, spot };
+  }
+
+  private exitSpot(floor: number): Spot {
+    const f = this.plan?.floors[floor];
+    return (floor === 0 ? f?.entrance : null) ?? f?.coreSpot ?? f?.entrance ?? { x: 0, z: 1, yaw: 0 };
   }
 
   private talkDuration(text: string) {
@@ -323,72 +425,103 @@ export class OfficeSim {
     return v.fallback;
   }
 
-  /** Persistent placement derived from presence (or the active visit). */
+  /** Persistent placement derived from presence (or the active visit / exit). */
   private decideGoal(a: AgentRuntime): Goal {
+    if (a.leaving) {
+      const spot = this.exitSpot(a.floor);
+      return { key: `exit:${a.floor}`, zone: a.goal?.zone ?? a.profile.deskZone, floor: a.floor, seat: null, spot, exit: true };
+    }
     if (a.visit?.goal) return a.visit.goal;
+    const plan = this.plan;
     const deskZone = a.profile.deskZone;
-    const zone = this.presenceZone.get(a.slug) ?? deskZone;
-    if (a.status === "meeting" || zone === "meeting_room") {
-      const seat = this.meetingSeatFor(a);
-      return { key: `seat:${seat.id}`, zone: "meeting_room", seat, spot: null };
+    const zone = a.presenceZone ?? deskZone;
+    const room = plan?.meetingRooms.get(zone);
+    if (a.status !== "meeting" && !room) a.meetingSeat = null;
+
+    if (a.status === "meeting" || room) {
+      const seat = this.meetingSeatFor(a, room?.key ?? null);
+      if (seat) return { key: seatKey(seat), zone: seat.zone, floor: seat.floor, seat, spot: null };
     }
-    if (zone === "lounge") return this.loungeGoal(a);
-    if (zone !== deskZone) {
-      // Presence placed the agent in another department: stand near that department's desk.
-      let cached = this.awaySpots.get(a.slug);
-      if (!cached || cached.zone !== zone) {
-        const d = DESK_BY_ZONE.get(zone);
-        cached = { zone, spot: d ? this.freeSpotNear(a, d.visit, { x: d.seat.x, z: d.seat.z }) : this.zoneSpot(zone) };
-        this.awaySpots.set(a.slug, cached);
+    if (plan?.lounges.has(zone)) {
+      const g = this.loungeGoal(a, zone);
+      if (g) return g;
+    } else if (zone !== deskZone && plan?.zones.has(zone)) {
+      const key = `away:${zone}:${plan.revision}`;
+      if (!a.awaySpot || a.awaySpot.key !== key) {
+        const first = plan.deptDesks.get(zone)?.[0];
+        const info = plan.zones.get(zone)!;
+        const spot = first ? this.freeSpotNear(a, info.floor, first.visit, { x: first.seat.x, z: first.seat.z }) : this.zoneSpot(zone)?.spot;
+        if (spot) a.awaySpot = { key, spot };
       }
-      return { key: `zone:${zone}`, zone, seat: null, spot: cached.spot };
+      if (a.awaySpot) return { key: a.awaySpot.key, zone, floor: plan.zones.get(zone)!.floor, seat: null, spot: a.awaySpot.spot };
     }
+    if (a.status === "idle" && this.settings.ambientLounge && Date.now() - a.idleSinceMs > LOUNGE_AFTER_MS) {
+      const g = this.loungeGoal(a, null);
+      if (g) return g;
+    }
+    a.loungeSeat = null;
     if (a.status === "idle") {
-      if (Date.now() - a.idleSinceMs > LOUNGE_AFTER_MS) return this.loungeGoal(a);
-      return { key: `stand:${a.slug}`, zone: deskZone, seat: null, spot: a.homeSpot };
+      if (a.desk && a.profile.defaultAnimation !== "idle") return { key: seatKey(a.desk.seat), zone: a.desk.zone, floor: a.desk.floor, seat: a.desk.seat, spot: null };
+      return this.homeGoal(a);
     }
-    if (a.desk) return { key: `seat:${a.desk.seat.id}`, zone: deskZone, seat: a.desk.seat, spot: null };
-    return { key: `stand:${a.slug}`, zone: deskZone, seat: null, spot: a.homeSpot };
+    if (a.desk) return { key: seatKey(a.desk.seat), zone: a.desk.zone, floor: a.desk.floor, seat: a.desk.seat, spot: null };
+    return this.homeGoal(a);
   }
 
   /**
-   * The orchestrator always chairs from the head. Others take the first free side seat in alternating
-   * north/south order; the seat stays theirs for as long as they are in the meeting.
+   * The orchestrator chairs from the head; others take the first free side seat in alternating
+   * north/south order and keep it for as long as they are in that meeting.
    */
-  private meetingSeatFor(a: AgentRuntime): Seat {
-    if (a.slug === ORCHESTRATOR) return MEETING_HEAD_SEAT;
-    if (a.meetingSeatTaken) return a.meetingSeatTaken;
-    const taken = new Set(this.list.map((o) => o.meetingSeatTaken?.id).filter(Boolean));
-    const seat = MEETING_SIDE_SEATS.find((s) => !taken.has(s.id)) ?? a.meetingSeat;
-    a.meetingSeatTaken = seat;
+  private meetingSeatFor(a: AgentRuntime, roomKey: string | null): Seat | null {
+    const plan = this.plan;
+    if (!plan || plan.meetingRooms.size === 0) return null;
+    const room = (roomKey && plan.meetingRooms.get(roomKey))
+      || plan.meetingRooms.get(plan.zones.get(a.profile.deskZone)?.meetingRoomKey ?? "")
+      || [...plan.meetingRooms.values()].find((r) => r.floor === (a.desk?.floor ?? 0))
+      || [...plan.meetingRooms.values()][0];
+    if (a.meetingSeat && a.meetingSeat.zone === room.key) return a.meetingSeat;
+    const taken = new Set(this.list.filter((o) => o !== a).map((o) => o.meetingSeat?.id).filter(Boolean));
+    const seat = a.profile.isOrchestrator && !taken.has(room.head.id) ? room.head : room.sides.find((s) => !taken.has(s.id)) ?? (!taken.has(room.head.id) ? room.head : null);
+    a.meetingSeat = seat;
     return seat;
   }
 
-  private loungeGoal(a: AgentRuntime): Goal {
-    return { key: `seat:${a.loungeSeat.id}`, zone: "lounge", seat: a.loungeSeat, spot: null };
+  private loungeGoal(a: AgentRuntime, key: string | null): Goal | null {
+    const plan = this.plan;
+    if (!plan || plan.lounges.size === 0) return null;
+    const lounges = [...plan.lounges.values()];
+    const preferred = (key && plan.lounges.get(key)) || lounges.find((l) => l.floor === (a.desk?.floor ?? a.floor)) || lounges[0];
+    if (!a.loungeSeat || a.loungeSeat.zone !== preferred.key) {
+      const taken = new Set(this.list.filter((o) => o !== a).map((o) => o.loungeSeat?.id).filter(Boolean));
+      a.loungeSeat = preferred.seats.find((s) => !taken.has(s.id)) ?? null;
+    }
+    if (!a.loungeSeat) return null;
+    return { key: seatKey(a.loungeSeat), zone: preferred.key, floor: preferred.floor, seat: a.loungeSeat, spot: null };
   }
 
-  private occupiedNear(x: number, z: number, self: AgentRuntime, radius: number) {
+  private occupiedNear(floor: number, x: number, z: number, self: AgentRuntime, radius: number) {
     for (const o of this.list) {
-      if (o === self) continue;
+      if (o === self || o.floor !== floor) continue;
       if (Math.hypot(o.x - x, o.z - z) < radius) return true;
       const g = o.goal;
-      const e = g ? (g.seat ? g.seat.approach : g.spot) : null;
+      const e = g && g.floor === floor ? (g.seat ? g.seat.approach : g.spot) : null;
       if (e && o.mode !== "seated" && Math.hypot(e.x - x, e.z - z) < radius) return true;
     }
     return false;
   }
 
   /** Preferred spot if free and walkable, else the nearest free walkable point on rings around `focus`. */
-  private freeSpotNear(self: AgentRuntime, preferred: Spot | null, focus: Vec2): Spot {
-    if (preferred && this.nav.walkable(preferred.x, preferred.z) && !this.occupiedNear(preferred.x, preferred.z, self, 0.75)) return preferred;
+  private freeSpotNear(self: AgentRuntime, floor: number, preferred: Spot | null, focus: Vec2): Spot {
+    const nav = this.nav(floor);
+    if (!nav) return preferred ?? { x: focus.x, z: focus.z + 1, yaw: Math.PI };
+    if (preferred && nav.walkable(preferred.x, preferred.z) && !this.occupiedNear(floor, preferred.x, preferred.z, self, 0.75)) return preferred;
     let best: Spot | null = null, bestScore = Infinity;
-    for (const r of [1.0, 1.3, 1.65, 2.0]) {
+    for (const r of [1.0, 1.3, 1.65, 2.0, 2.5]) {
       for (let i = 0; i < 16; i++) {
         const ang = (i / 16) * Math.PI * 2;
         const x = focus.x + Math.sin(ang) * r, z = focus.z + Math.cos(ang) * r;
-        if (!this.nav.walkable(x, z) || this.occupiedNear(x, z, self, 0.75)) continue;
-        const score = Math.hypot(x - self.x, z - self.z) * 0.25 + r;
+        if (!nav.walkable(x, z) || this.occupiedNear(floor, x, z, self, 0.75)) continue;
+        const score = (self.floor === floor ? Math.hypot(x - self.x, z - self.z) * 0.25 : 0) + r;
         if (score < bestScore) { bestScore = score; best = { x, z, yaw: Math.atan2(focus.x - x, focus.z - z) }; }
       }
       if (best) return best;
@@ -398,29 +531,27 @@ export class OfficeSim {
 
   private visitGoal(a: AgentRuntime, v: Visit): Goal | null {
     const b = this.agents.get(v.target);
-    if (!b) return null;
+    if (!b || b.leaving) return null;
     const bGoal = b.goal ?? this.decideGoal(b);
-    const atDesk = b.desk && (bGoal.seat?.id === b.desk.seat.id || bGoal.key === `stand:${b.slug}`);
-    if (v.kind === "delegation" || atDesk) {
-      if (!b.desk) return null;
-      const focus = { x: b.desk.seat.x, z: b.desk.seat.z };
-      const spot = this.freeSpotNear(a, b.desk.visit, focus);
-      return { key: `visit:${v.createdMs}:${b.slug}`, zone: b.desk.zone, seat: null, spot };
+    const atDesk = b.desk && bGoal.zone === b.desk.zone && (bGoal.seat?.id === b.desk.seat.id || bGoal.key.startsWith("stand:"));
+    if ((v.kind === "delegation" || atDesk) && b.desk) {
+      const spot = this.freeSpotNear(a, b.desk.floor, b.desk.visit, { x: b.desk.seat.x, z: b.desk.seat.z });
+      return { key: `visit:${v.createdMs}:${b.slug}`, zone: b.desk.zone, floor: b.desk.floor, seat: null, spot };
     }
     const anchor = bGoal.seat ?? bGoal.spot ?? { x: b.x, z: b.z };
-    const spot = this.freeSpotNear(a, null, { x: anchor.x, z: anchor.z });
-    return { key: `visit:${v.createdMs}:${b.slug}`, zone: bGoal.zone, seat: null, spot };
+    const spot = this.freeSpotNear(a, bGoal.floor, null, { x: anchor.x, z: anchor.z });
+    return { key: `visit:${v.createdMs}:${b.slug}`, zone: bGoal.zone, floor: bGoal.floor, seat: null, spot };
   }
 
   private startNextVisit(a: AgentRuntime) {
-    while (!a.visit && a.queue.length && a.status !== "meeting") {
+    while (!a.visit && a.queue.length && a.status !== "meeting" && !a.leaving) {
       const v = a.queue.shift()!;
       if (Date.now() - v.createdMs > QUEUE_MAX_AGE_MS) continue;
       const b = this.agents.get(v.target);
-      if (!b) continue;
+      if (!b || b.leaving) continue;
       if (b.status === "meeting") {
         if (v.kind === "message") continue;
-        // Delegating to someone in a meeting: brief the room from where we are.
+        // Delegating to someone in a meeting: brief from where we are.
         v.goal = null;
         this.beginTalk(a, v);
         a.visit = v;
@@ -444,16 +575,14 @@ export class OfficeSim {
     if (b && b.status !== "meeting") { b.listenTo = a.slug; b.listenUntil = v.talkUntil; }
   }
 
-  private endVisit(a: AgentRuntime) {
-    a.visit = null;
-  }
-
   private place(a: AgentRuntime) {
     const g = this.decideGoal(a);
     a.goal = g;
     a.placed = true;
     a.path = null;
     a.snapPose = true;
+    a.fade = 1;
+    a.floor = g.floor;
     if (g.seat) {
       a.x = g.seat.x; a.z = g.seat.z; a.yaw = a.desiredYaw = g.seat.yaw;
       a.mode = "seated"; a.seat = g.seat; a.sit = 1; a.arrived = true;
@@ -463,39 +592,49 @@ export class OfficeSim {
     }
   }
 
+  /** A newly created agent appears at the entrance (ground floor) or the elevator of its desk's floor. */
+  private spawn(a: AgentRuntime) {
+    const target = this.decideGoal(a);
+    const floor = target.floor;
+    const f = this.plan!.floors[floor] ?? this.plan!.floors[0];
+    const at = (floor === 0 ? f.entrance : null) ?? f.coreSpot ?? f.entrance ?? { x: 0, z: 1, yaw: 0 };
+    a.placed = true;
+    a.floor = f.index;
+    a.x = at.x; a.z = at.z; a.yaw = a.desiredYaw = at.yaw;
+    a.mode = "appearing"; a.fade = 0; a.sit = 0; a.seat = null; a.snapPose = true; a.arrived = false;
+  }
+
   // ───────────────────────── Simulation step ─────────────────────────
 
   update(rawDt: number) {
     // Large frame gaps (slow devices, tab resume) are sub-stepped so behaviour stays real-time without tunnelling.
     const total = Math.min(1, Math.max(0, rawDt));
+    if (!this.plan) return;
     const steps = Math.max(1, Math.ceil(total / 0.05));
     for (let i = 0; i < steps; i++) this.step(total / steps);
+    if (this.list.some((a) => a.removed)) this.purge();
     for (const a of this.list) this.animate(a, total);
-    if (this.dirty) {
-      this.dirty = false;
-      this.listeners.forEach((fn) => fn());
-    }
+    if (this.dirty) this.emit();
   }
 
   private step(dt: number) {
     this.time += dt;
     const t = this.time;
     for (const a of this.list) {
-      // Expire transient state.
+      if (!a.placed || a.removed) continue;
       if (a.bubble && a.bubble.until <= t) { a.bubble = null; this.dirty = true; }
       if (a.listenTo && a.listenUntil <= t) a.listenTo = null;
 
-      // Visits.
       if (!a.visit) this.startNextVisit(a);
       const v = a.visit;
       if (v) {
-        if (v.stage === "go" && (t - v.startedAt > VISIT_TIMEOUT)) this.endVisit(a);
+        if (v.stage === "go" && (t - v.startedAt > VISIT_TIMEOUT || !v.goal)) a.visit = null;
         else if (v.stage === "go" && a.arrived && a.goal?.key === v.goal?.key) this.beginTalk(a, v);
-        else if (v.stage === "talk" && t >= v.talkUntil) this.endVisit(a);
+        else if (v.stage === "talk" && t >= v.talkUntil) a.visit = null;
       }
 
       const goal = this.decideGoal(a);
-      if (!a.goal || goal.key !== a.goal.key) {
+      if (!a.goal || goal.key !== a.goal.key || goal.floor !== a.goal.floor) {
         a.goal = goal;
         a.arrived = false;
         a.path = null;
@@ -511,8 +650,27 @@ export class OfficeSim {
   private move(a: AgentRuntime, dt: number) {
     const g = a.goal!;
     switch (a.mode) {
+      case "appearing": {
+        a.fade = Math.min(1, a.fade + dt / FADE_TIME);
+        if (a.fade >= 1) a.mode = "stand";
+        return;
+      }
+      case "vanishing": {
+        a.fade = Math.max(0, a.fade - dt / FADE_TIME);
+        if (a.fade > 0) return;
+        if (a.leaving) { a.removed = true; return; }
+        // Elevator ride: re-appear at the core of the destination floor.
+        const to = a.transitFloor ?? g.floor;
+        const spot = this.plan!.floors[to]?.coreSpot ?? this.plan!.floors[to]?.entrance;
+        a.transitFloor = null;
+        a.floor = to;
+        if (spot) { a.x = spot.x; a.z = spot.z; a.yaw = a.desiredYaw = spot.yaw; }
+        a.path = null;
+        a.mode = "appearing";
+        return;
+      }
       case "seated": {
-        if (g.seat && a.seat && g.seat.id === a.seat.id) {
+        if (g.seat && a.seat && seatKey(g.seat) === seatKey(a.seat) && g.floor === a.floor) {
           a.arrived = true;
           a.desiredYaw = a.seat.yaw;
           return;
@@ -526,8 +684,8 @@ export class OfficeSim {
         const seat = a.seat!;
         a.trans = Math.min(1, a.trans + dt / RISE_TIME);
         const p = ease(a.trans);
-        a.x = seat.x + (seat.approach.x - seat.x) * p;
-        a.z = seat.z + (seat.approach.z - seat.z) * p;
+        a.x = a.transFrom.x + (seat.approach.x - a.transFrom.x) * p;
+        a.z = a.transFrom.z + (seat.approach.z - a.transFrom.z) * p;
         a.sit = 1 - p;
         if (a.trans >= 1) { a.mode = "stand"; a.seat = null; a.sit = 0; }
         return;
@@ -540,17 +698,24 @@ export class OfficeSim {
         a.z = a.transFrom.z + (seat.z - a.transFrom.z) * p;
         a.sit = p;
         a.desiredYaw = seat.yaw;
-        if (a.trans >= 1) { a.mode = "seated"; a.sit = 1; a.arrived = Boolean(g.seat && g.seat.id === seat.id); }
+        if (a.trans >= 1) { a.mode = "seated"; a.sit = 1; a.arrived = Boolean(g.seat && seatKey(g.seat) === seatKey(seat)); }
         return;
       }
       default: {
-        const entry: Vec2 | null = g.seat ? g.seat.approach : g.spot;
+        // Different floor: walk to this floor's elevator core first.
+        const changeFloor = g.floor !== a.floor;
+        const entry: Vec2 | null = changeFloor ? this.exitSpot(a.floor) : g.seat ? g.seat.approach : g.spot;
         if (!entry) return;
         const d = Math.hypot(entry.x - a.x, entry.z - a.z);
         if (d < ARRIVE || (a.mode === "stand" && a.arrived && d < 0.5)) {
           a.mode = "stand";
           a.speed = 0;
           a.path = null;
+          if (changeFloor || g.exit) {
+            a.transitFloor = changeFloor ? g.floor : null;
+            a.mode = "vanishing";
+            return;
+          }
           if (g.seat) {
             a.desiredYaw = g.seat.yaw;
             if (Math.abs(wrapAngle(a.yaw - g.seat.yaw)) < 0.35) {
@@ -568,27 +733,30 @@ export class OfficeSim {
     }
   }
 
-  private plan(a: AgentRuntime, entry: Vec2, avoidOthers: boolean) {
+  private planPath(a: AgentRuntime, entry: Vec2, avoidOthers: boolean) {
+    const nav = this.nav(a.floor);
+    if (!nav) { a.path = [{ x: a.x, z: a.z }, { x: entry.x, z: entry.z }]; a.pathIdx = 1; return; }
     let extra: ((idx: number) => boolean) | undefined;
     if (avoidOthers) {
       const blocked = new Set<number>();
       for (const o of this.list) {
-        if (o === a || o.mode === "walk") continue;
+        if (o === a || o.mode === "walk" || o.floor !== a.floor || o.fade < 0.5) continue;
         if (Math.hypot(o.x - entry.x, o.z - entry.z) < 0.7) continue;
         for (let dx = -0.4; dx <= 0.41; dx += 0.4) for (let dz = -0.4; dz <= 0.41; dz += 0.4) {
-          const idx = this.nav.indexAt(o.x + dx, o.z + dz);
+          const idx = nav.indexAt(o.x + dx, o.z + dz);
           if (idx >= 0) blocked.add(idx);
         }
       }
       extra = (idx) => blocked.has(idx);
     }
-    const path = this.nav.findPath(a.x, a.z, entry.x, entry.z, extra) ?? (extra ? this.nav.findPath(a.x, a.z, entry.x, entry.z) : null);
+    const path = nav.findPath(a.x, a.z, entry.x, entry.z, extra) ?? (extra ? nav.findPath(a.x, a.z, entry.x, entry.z) : null);
     a.path = path ?? [{ x: a.x, z: a.z }, { x: entry.x, z: entry.z }];
     a.pathIdx = 1;
   }
 
   private walk(a: AgentRuntime, entry: Vec2, dt: number) {
-    if (!a.path) this.plan(a, entry, false);
+    const nav = this.nav(a.floor)!;
+    if (!a.path) this.planPath(a, entry, false);
     const path = a.path!;
     let wp = path[a.pathIdx];
     while (a.pathIdx < path.length - 1 && Math.hypot(wp.x - a.x, wp.z - a.z) < 0.3) wp = path[++a.pathIdx];
@@ -603,7 +771,7 @@ export class OfficeSim {
     let sepX = 0, sepZ = 0, yieldTo: AgentRuntime | null = null, blockedByStatic = false;
     const ghost = this.time < a.ghostUntil;
     for (const o of this.list) {
-      if (o === a) continue;
+      if (o === a || o.floor !== a.floor || o.fade < 0.5) continue;
       const ox = o.x - a.x, oz = o.z - a.z;
       const od = Math.hypot(ox, oz);
       if (od > 1.6 || od < 1e-4) continue;
@@ -617,7 +785,7 @@ export class OfficeSim {
     }
     if (blockedByStatic && this.time > a.replanAt) {
       a.replanAt = this.time + 1.5;
-      this.plan(a, entry, true);
+      this.planPath(a, entry, true);
     }
     if (yieldTo) {
       a.waitT += dt;
@@ -636,30 +804,30 @@ export class OfficeSim {
     const step = a.speed * dt;
     let nx = a.x + vx * step, nz = a.z + vz * step;
     const finalApproach = last && remaining < 1.2; // seat/spot entries may sit inside inflated furniture cells
-    if (!finalApproach && this.nav.walkable(a.x, a.z) && !this.nav.walkable(nx, nz)) {
+    if (!finalApproach && nav.walkable(a.x, a.z) && !nav.walkable(nx, nz)) {
       // Steering pushed us toward an obstacle: follow the path direction, else slide along an axis.
       const options: Array<[number, number]> = [[a.x + dirX * step, a.z + dirZ * step], [a.x + dirX * step, a.z], [a.x, a.z + dirZ * step]];
-      const ok = options.find(([x, z]) => Math.hypot(x - a.x, z - a.z) > step * 0.3 && this.nav.walkable(x, z));
+      const ok = options.find(([x, z]) => Math.hypot(x - a.x, z - a.z) > step * 0.3 && nav.walkable(x, z));
       [nx, nz] = ok ?? [a.x + dirX * step, a.z + dirZ * step];
     }
     // Hard non-overlap: never step closer to someone already within personal space.
     if (!ghost) {
       for (const o of this.list) {
-        if (o === a) continue;
+        if (o === a || o.floor !== a.floor || o.fade < 0.5) continue;
         const minD = 0.5;
         const nd = Math.hypot(nx - o.x, nz - o.z);
         if (nd < minD && nd < Math.hypot(a.x - o.x, a.z - o.z)) {
           if (o.mode === "walk" && o.index > a.index && nd > 0.44) continue; // priority walker keeps going; the other yields
           const ux = (nx - o.x) / (nd || 1), uz = (nz - o.z) / (nd || 1);
           nx = o.x + ux * minD; nz = o.z + uz * minD;
-          if (!this.nav.walkable(nx, nz)) { nx = a.x; nz = a.z; }
+          if (!nav.walkable(nx, nz)) { nx = a.x; nz = a.z; }
         }
       }
     }
     // Hard guarantee: never step through a wall or glass partition.
-    if (this.nav.crossesWall(a.x, a.z, nx, nz)) {
-      if (!this.nav.crossesWall(a.x, a.z, nx, a.z)) nz = a.z;
-      else if (!this.nav.crossesWall(a.x, a.z, a.x, nz)) nx = a.x;
+    if (nav.crossesWall(a.x, a.z, nx, nz)) {
+      if (!nav.crossesWall(a.x, a.z, nx, a.z)) nz = a.z;
+      else if (!nav.crossesWall(a.x, a.z, a.x, nz)) nx = a.x;
       else { nx = a.x; nz = a.z; }
     }
     const moved = Math.hypot(nx - a.x, nz - a.z);
@@ -672,7 +840,7 @@ export class OfficeSim {
     a.progressT += dt;
     if (a.progressT > 2) {
       if (remaining > a.progressDist - 0.3) {
-        this.plan(a, entry, true);
+        this.planPath(a, entry, true);
         if (a.progressDist !== Infinity && remaining > a.progressDist - 0.05) a.ghostUntil = this.time + 2;
       }
       a.progressDist = remaining;
@@ -689,6 +857,8 @@ export class OfficeSim {
     if (a.listenTo && a.listenUntil > t) return "listening";
     switch (a.status) {
       case "working": return a.toolAnim && a.toolUntil > t ? a.toolAnim : "typing";
+      case "thinking": return "thinking";
+      case "collaborating":
       case "waiting": return "waiting";
       case "meeting": return "listening";
       case "error": return "error";
@@ -699,20 +869,22 @@ export class OfficeSim {
 
   private lookTarget(a: AgentRuntime): Vec2 | null {
     const t = this.time;
-    if (a.listenTo && a.listenUntil > t) {
-      const s = this.agents.get(a.listenTo);
-      if (s) return { x: s.x, z: s.z };
-    }
-    if (a.visit?.stage === "talk") {
-      const b = this.agents.get(a.visit.target);
-      if (b) return { x: b.x, z: b.z };
-    }
+    const same = (slug: string | null) => {
+      const o = slug ? this.agents.get(slug) : undefined;
+      return o && o.floor === a.floor && o.fade > 0.5 ? { x: o.x, z: o.z } : null;
+    };
+    if (a.listenTo && a.listenUntil > t) { const p = same(a.listenTo); if (p) return p; }
+    if (a.visit?.stage === "talk") { const p = same(a.visit.target); if (p) return p; }
+    if (a.status === "collaborating" && a.waitingFor && a.waitingFor !== "approval") return same(a.waitingFor);
     return null;
   }
 
   private animate(a: AgentRuntime, dt: number) {
     const anim = this.currentAnim(a);
     if (anim !== a.anim) { a.anim = anim; a.animStart = this.time; }
+    // Idle-at-desk pose preference: a subtle, clearly non-working seated variant.
+    a.idleVariant = anim === "idle" && a.mode === "seated" && a.desk && a.seat?.id === a.desk.seat.id && a.profile.defaultAnimation !== "idle"
+      ? a.profile.defaultAnimation : null;
 
     // Facing: standing characters turn their whole body toward a conversation partner; seated ones turn the head.
     const look = this.lookTarget(a);
@@ -740,9 +912,10 @@ export class OfficeSim {
     const sitDrop = (seatH + 0.065) / a.scale - HIP_HEIGHT;
     computeTargetPose(a.target, {
       anim: a.anim, sit: a.sit, sitDrop,
-      atTable: seat?.zone === "meeting_room",
+      atTable: Boolean(seat && this.plan?.meetingRooms.has(seat.zone)),
       lounge: seat?.kind === "sofa",
       t: this.time, animTime: this.time - a.animStart, seed: a.index * 1.618, look: lookRel,
+      idleVariant: a.idleVariant,
     });
     if (a.snapPose) { a.pose.set(a.target); a.snapPose = false; }
     else {
@@ -760,8 +933,10 @@ export class OfficeSim {
   snapshot(): Record<string, CharacterSnapshot> {
     const out: Record<string, CharacterSnapshot> = {};
     for (const a of this.list) {
+      if (a.leaving) continue;
       out[a.slug] = {
         zone: a.goal?.zone ?? a.profile.deskZone,
+        floor: a.floor,
         position: [Math.round(a.x * 100) / 100, Math.round(a.z * 100) / 100],
         animation: a.anim,
         walking: a.mode === "walk",

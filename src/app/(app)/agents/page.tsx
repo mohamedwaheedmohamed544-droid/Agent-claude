@@ -1,8 +1,10 @@
 "use client";
 
+import { Suspense } from "react";
 import { Page } from "@/components/page";
-import { AgentDirectory } from "@/components/agents/agent-directory";
+import { LoadingBlock } from "@/components/ui";
+import { AgentManagement } from "@/components/agent-management/agent-management";
 
 export default function AgentsPage() {
-  return <Page wide><AgentDirectory /></Page>;
+  return <Page wide><Suspense fallback={<LoadingBlock rows={4} />}><AgentManagement /></Suspense></Page>;
 }

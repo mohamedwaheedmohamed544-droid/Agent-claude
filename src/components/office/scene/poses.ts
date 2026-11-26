@@ -25,6 +25,9 @@ export const C = {
 } as const;
 export const CHANNELS = 35;
 
+/** Preferred idle-at-desk posture (profile.defaultAnimation); deliberately subtle so it never reads as real work. */
+export type IdleVariant = "working" | "reading" | "thinking" | null;
+
 export interface PoseContext {
   anim: CharacterAnimation;
   /** 0 = standing, 1 = seated. */
@@ -42,6 +45,7 @@ export interface PoseContext {
   seed: number;
   /** Relative yaw (rad) toward something to look at, 0 if none. */
   look: number;
+  idleVariant?: IdleVariant;
 }
 
 type Arm = { rx: number; ry: number; rz: number; elbow: number; hand: number };
@@ -89,6 +93,20 @@ export function computeTargetPose(out: Float32Array, ctx: PoseContext) {
       }
       out[C.HEAD_RY] += 0.22 * Math.sin(s * 0.17) * Math.sin(s * 0.29 + 1);
       out[C.HEAD_RX] += 0.03 * Math.sin(s * 0.23);
+      if (seated && !ctx.lounge && ctx.idleVariant) {
+        // Relaxed at the desk: no typing, no gestures — just the agent's preferred resting posture.
+        out[C.SPINE_RX] = -0.05;
+        if (ctx.idleVariant === "working") {
+          setArm(out, true, { rx: 0.5, ry: 0.32, rz: 0.16, elbow: 0.95, hand: 0.15 });
+          setArm(out, false, { rx: 0.5, ry: 0.32, rz: 0.16, elbow: 0.95, hand: 0.15 });
+        } else if (ctx.idleVariant === "reading") {
+          out[C.HEAD_RX] = 0.16;
+          setArm(out, true, { rx: 0.45, ry: 0.4, rz: 0.14, elbow: 1.1, hand: 0.05 });
+        } else {
+          out[C.HEAD_RZ] = 0.06;
+          setArm(out, false, { rx: 0.5, ry: 0.45, rz: 0.04, elbow: 2.0, hand: 0.25 });
+        }
+      }
       break;
     }
     case "walking":

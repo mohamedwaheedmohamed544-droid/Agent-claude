@@ -29,6 +29,8 @@ export interface CharacterRig {
   prop: THREE.Bone | null;
   scale: number;
   setVariant(variant: MaterialVariant): void;
+  /** Per-character fade (spawn, exit, elevator). Uses private material clones only while < 1. */
+  setOpacity(opacity: number): void;
   setShadows(cast: boolean): void;
   dispose(): void;
 }
@@ -103,8 +105,10 @@ function strip(b: PartBuilder, a: V3, c: V3, width: number, color: string) {
 export function buildCharacter(profile: AgentProfile, res: SceneResources): CharacterRig {
   const ap = profile.appearance;
   const female = ap.gender === "female";
-  const robeOutfit = ap.outfit === "thobe" || ap.outfit === "abaya" || ap.outfit === "blazer";
-  const sw = female ? 0.9 : 1; // shoulder width factor
+  const neutral = ap.gender === "neutral";
+  // Long garments: thobe, abaya, and the long skirt worn with a blazer by women in this style guide.
+  const robeOutfit = ap.outfit === "thobe" || ap.outfit === "abaya" || (ap.outfit === "blazer" && female);
+  const sw = female ? 0.9 : neutral ? 0.95 : 1; // shoulder width factor
   const skin = ap.skin;
   const skinShadow = shade(skin, -0.18);
   const hair = ap.hairColor;
@@ -114,8 +118,9 @@ export function buildCharacter(profile: AgentProfile, res: SceneResources): Char
   const sleeve = ap.outfit === "shirt" ? shade(upper, -0.04) : upper;
   const lower =
     ap.outfit === "suit" ? shade(upper, -0.12)
-    : ap.outfit === "shirt" ? "#2e3443"
-    : ap.outfit === "blazer" ? shade(upper, -0.28)
+    : ap.outfit === "shirt" || ap.outfit === "cardigan" ? "#2e3443"
+    : ap.outfit === "turtleneck" ? "#2a2f37"
+    : ap.outfit === "blazer" ? (female ? shade(upper, -0.28) : "#2b3038")
     : upper;
   const shoe = ap.outfit === "thobe" ? "#5b4331" : "#24201e";
 
@@ -158,7 +163,7 @@ export function buildCharacter(profile: AgentProfile, res: SceneResources): Char
   const elbowR = group("elbowR", armR, [0, -UPPER_ARM, 0]);
   const handL = group("handL", elbowL, [0, -FOREARM, 0]);
   const handR = group("handR", elbowR, [0, -FOREARM, 0]);
-  const hipW = female ? 0.097 : 0.092;
+  const hipW = female ? 0.097 : neutral ? 0.094 : 0.092;
   const legL = group("legL", hips, [hipW, -0.02, 0]);
   const legR = group("legR", hips, [-hipW, -0.02, 0]);
   const kneeL = group("kneeL", legL, [0, -UPPER_LEG, 0]);
@@ -169,7 +174,7 @@ export function buildCharacter(profile: AgentProfile, res: SceneResources): Char
   // ── Pelvis & torso ──
   const pelvis = new PartBuilder()
     .add(sphere(), lower, { pos: [0, 0.0, 0], scale: [0.158 * (female ? 1.04 : 1), 0.115, 0.105] });
-  if (ap.outfit === "shirt" || ap.outfit === "suit") pelvis.add(cyl(0.15, 0.15, 0.035, 14), ap.outfit === "shirt" ? "#1c1a1a" : shade(upper, -0.2), { pos: [0, 0.075, 0], scale: [1, 1, 0.7] });
+  if (ap.outfit === "shirt" || ap.outfit === "suit" || ap.outfit === "cardigan" || ap.outfit === "turtleneck" || (ap.outfit === "blazer" && !female)) pelvis.add(cyl(0.15, 0.15, 0.035, 14), ap.outfit === "shirt" ? "#1c1a1a" : shade(upper, -0.2), { pos: [0, 0.075, 0], scale: [1, 1, 0.7] });
   attach(hips, pelvis);
 
   const abdomen = new PartBuilder().add(cyl(0.14 * sw, 0.152, 0.22, 14), upper, { pos: [0, 0.1, 0], scale: [1, 1, 0.68] });
@@ -196,6 +201,19 @@ export function buildCharacter(profile: AgentProfile, res: SceneResources): Char
     chestB
       .add(cyl(0.058, 0.064, 0.04, 14), shade(upper, 0.3), { pos: [0, 0.285, 0] })
       .add(box(0.012, 0.2, 0.006), shade(upper, -0.12), { pos: [0, 0.16, front] });
+  } else if (ap.outfit === "turtleneck") {
+    // High rolled collar and a subtle rib line.
+    chestB
+      .add(cyl(0.062, 0.07, 0.09, 14), shade(upper, -0.05), { pos: [0, 0.3, -0.003] })
+      .add(box(0.2, 0.006, 0.006), shade(upper, -0.1), { pos: [0, 0.03, front - 0.006] });
+  } else if (ap.outfit === "cardigan") {
+    // Open knit cardigan over a light shirt: inner V, button band, collar.
+    chestB
+      .add(box(0.085, 0.15, 0.006), "#ece8e1", { pos: [0, 0.2, front + 0.003] })
+      .add(cyl(0.058, 0.064, 0.035, 14), "#ece8e1", { pos: [0, 0.285, 0] })
+      .add(box(0.018, 0.24, 0.01), shade(upper, 0.12), { pos: [0.047, 0.13, front + 0.004], rot: [0, 0, -0.12] })
+      .add(box(0.018, 0.24, 0.01), shade(upper, 0.12), { pos: [-0.047, 0.13, front + 0.004], rot: [0, 0, 0.12] });
+    for (let i = 0; i < 3; i++) chestB.add(sphere(6, 4), shade(upper, -0.35), { pos: [-0.04 + i * 0.002, 0.07 + i * 0.05, front + 0.01], scale: [0.007, 0.007, 0.004] });
   } else if (ap.outfit === "abaya") {
     chestB.add(box(0.016, 0.22, 0.006), shade(upper, 0.12), { pos: [0, 0.15, front] });
   }
@@ -221,7 +239,7 @@ export function buildCharacter(profile: AgentProfile, res: SceneResources): Char
     .add(box(0.03, 0.006, 0.008), hair, { pos: [0.032, 0.142, 0.092], rot: [0, 0, 0.08] })
     .add(box(0.03, 0.006, 0.008), hair, { pos: [-0.032, 0.142, 0.092], rot: [0, 0, -0.08] })
     .add(box(0.03, 0.005, 0.006), shade(skin, -0.3), { pos: [0, 0.066, 0.099] });
-  if (!female) {
+  if (ap.gender === "male") {
     // Neatly trimmed full beard and moustache.
     headB
       .add(partialSphere(0, Math.PI, Math.PI * 0.56, Math.PI * 0.42, 16, 6), hair, { pos: [0, 0.11, 0.005], scale: [0.09, 0.117, 0.103] })
@@ -351,18 +369,46 @@ export function buildCharacter(profile: AgentProfile, res: SceneResources): Char
     meshes.push({ mesh, map });
   }
 
+  let currentVariant: MaterialVariant = "normal";
+  let fadeMats: THREE.MeshStandardMaterial[] | null = null;
+  let fadeOpacity = 1;
+  const dropFade = () => {
+    if (!fadeMats) return;
+    fadeMats.forEach((m) => m.dispose());
+    fadeMats = null;
+    for (const { mesh, map } of meshes) mesh.material = res.characterMaterial(currentVariant, map);
+  };
+
   const rig: CharacterRig = {
     root, body, hips, spine, chest, neck, head,
     armL, elbowL, handL, armR, elbowR, handR,
     legL, kneeL, footL, legR, kneeR, footR,
     robe, prop, scale,
     setVariant(variant) {
+      currentVariant = variant;
       for (const { mesh, map } of meshes) mesh.material = res.characterMaterial(variant, map);
+      if (fadeMats) { const o = fadeOpacity; dropFade(); rig.setOpacity(o); }
+    },
+    setOpacity(opacity) {
+      if (opacity >= 0.999) { if (fadeMats) dropFade(); return; }
+      if (!fadeMats) {
+        fadeMats = meshes.map(({ mesh }) => {
+          const m = (mesh.material as THREE.MeshStandardMaterial).clone();
+          m.transparent = true;
+          m.depthWrite = false;
+          mesh.material = m;
+          return m;
+        });
+      }
+      fadeOpacity = opacity;
+      const base = currentVariant === "ghost" ? 0.26 : 1;
+      for (const m of fadeMats) m.opacity = base * Math.max(0, opacity);
     },
     setShadows(cast) {
       for (const { mesh } of meshes) mesh.castShadow = cast;
     },
     dispose() {
+      dropFade();
       for (const g of geometries) g.dispose();
       skeleton.dispose();
       root.removeFromParent();
