@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
 import type { AgentPresence, AgentProfile, AgentStatus } from "@/lib/office/types";
-import type { Display, OfficePlan } from "./plan";
+import type { Display, OfficePlan, Vec2 } from "./plan";
 import { truncate } from "./simulation";
 import { local } from "./geometry";
 
@@ -290,7 +290,7 @@ function MeetingScreen({ spec, roomName, roomNameAr, profiles, presence, lastSta
 export function OfficeDisplays({ plan, view, offsets, profiles, presence, lastStatement, locale }: {
   plan: OfficePlan;
   view: number | "all";
-  offsets: number[];
+  offsets: Vec2[];
   profiles: AgentProfile[];
   presence: AgentPresence[];
   lastStatement: { agent: string; content: string } | null;
@@ -312,7 +312,8 @@ export function OfficeDisplays({ plan, view, offsets, profiles, presence, lastSt
   return (
     <group>
       {plan.floors.map((fp) => (
-        <group key={`${plan.revision}:${fp.index}`} position-x={offsets[fp.index] ?? 0} visible={view === "all" || view === fp.index}>
+        <group key={`${plan.revision}:${fp.index}`} position={[offsets[fp.index]?.x ?? 0, 0, offsets[fp.index]?.z ?? 0]} visible={view === "all" || view === fp.index}>
+          {view === "all" && <FloorCaption floor={fp.index} x={fp.bounds.minX} z={fp.bounds.minZ - 0.6} />}
           {fp.signs.map((d) => {
             const z = plan.zones.get(d.zone);
             return <DepartmentSign key={d.zone} spec={d} name={z?.name ?? d.zone} nameAr={z?.nameAr ?? ""} color={z?.color ?? "#6366f1"} members={membersByZone.get(d.zone) ?? EMPTY} presence={byAgent} locale={locale} />;
@@ -329,3 +330,29 @@ export function OfficeDisplays({ plan, view, offsets, profiles, presence, lastSt
 }
 
 const EMPTY: AgentProfile[] = [];
+
+/** Ground caption for the exploded multi-floor view. */
+function FloorCaption({ floor, x, z }: { floor: number; x: number; z: number }) {
+  const { ctx, texture, material } = useCanvasTexture(512, 96);
+  const fonts = useFontsReady();
+  useEffect(() => {
+    const font = fontStack();
+    ctx.clearRect(0, 0, 512, 96);
+    ctx.fillStyle = "rgba(15,21,34,0.82)";
+    roundRect(ctx, 0, 8, 512, 80, 40);
+    ctx.fill();
+    ctx.fillStyle = "#f8fafc";
+    ctx.font = `700 44px ${font}`;
+    ctx.fillText(`FLOOR ${floor + 1}`, 36, 64);
+    ctx.direction = "rtl"; ctx.textAlign = "right";
+    ctx.fillText(`الطابق ${floor + 1}`, 476, 64);
+    ctx.direction = "ltr"; ctx.textAlign = "left";
+    material.transparent = true;
+    texture.needsUpdate = true;
+  }, [ctx, texture, material, floor, fonts]);
+  return (
+    <mesh position={[x + 3.2, 0.02, z - 0.8]} rotation-x={-Math.PI / 2} material={material} raycast={() => null}>
+      <planeGeometry args={[6.4, 1.2]} />
+    </mesh>
+  );
+}

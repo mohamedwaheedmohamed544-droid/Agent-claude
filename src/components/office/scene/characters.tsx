@@ -4,7 +4,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useReducer, useRef } from "r
 import * as THREE from "three";
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import type { AgentPresence, AgentProfile, AgentStatus } from "@/lib/office/types";
-import { floorVisible } from "./plan";
+import { floorVisible, type Vec2 } from "./plan";
 import { useScene } from "./context";
 import { buildCharacter, HIP_HEIGHT, type CharacterRig } from "./character-model";
 import { applyPose } from "./poses";
@@ -100,7 +100,7 @@ export interface CharactersProps {
   selectedAgent: string | null;
   dimmedAgents: string[];
   view: number | "all";
-  offsets: number[];
+  offsets: Vec2[];
   showLabels: boolean;
   characterScale: number;
   onSelectAgent: (slug: string | null) => void;
@@ -140,8 +140,13 @@ export function Characters({ presence, selectedAgent, dimmedAgents, view, offset
   const cfg = useRef({ view, offsets, showLabels, selectedAgent, characterScale });
   cfg.current = { view, offsets, showLabels, selectedAgent, characterScale };
 
+  const candidates = useRef<Array<{ el: HTMLElement; x: number; y: number; depth: number; w: number; pinned: boolean }>>([]);
+  const placedBoxes = useRef<number[]>([]);
+
   useFrame(({ camera, size }, delta) => {
     sim.update(delta);
+    const cands = candidates.current;
+    cands.length = 0;
     const t = sim.time;
     const c = cfg.current;
     const cs = Math.min(1.25, Math.max(0.8, c.characterScale || 1));
@@ -157,8 +162,9 @@ export function Characters({ presence, selectedAgent, dimmedAgents, view, offset
         if (bubble) overlay.place(bubble, 0, 0, 0, false);
         continue;
       }
-      const ox = c.offsets[a.floor] ?? 0;
-      r.group.position.set(a.x + ox, 0, a.z);
+      const o = c.offsets[a.floor] ?? { x: 0, z: 0 };
+      const ox = o.x, oz = o.z;
+      r.group.position.set(a.x + ox, 0, a.z + oz);
       r.group.rotation.y = a.yaw;
       r.rig.root.scale.setScalar(cs);
       r.rig.setOpacity(a.fade);
@@ -177,17 +183,33 @@ export function Characters({ presence, selectedAgent, dimmedAgents, view, offset
 
       // Screen-space anchors for the HTML label and speech bubble.
       if (label) {
-        v.set(a.x + ox, h + 0.3, a.z).project(camera);
-        const on = v.z < 1 && !a.leaving && a.fade > 0.5 && (c.showLabels || c.selectedAgent === a.slug);
-        overlay.place(label, (v.x * 0.5 + 0.5) * size.width, (0.5 - v.y * 0.5) * size.height, 100 + Math.round((1 - v.z) * 5000), on);
+        v.set(a.x + ox, h + 0.3, a.z + oz).project(camera);
+        const pinned = c.selectedAgent === a.slug;
+        const on = v.z < 1 && !a.leaving && a.fade > 0.5 && (c.showLabels || pinned);
+        if (on) cands.push({ el: label, x: (v.x * 0.5 + 0.5) * size.width, y: (0.5 - v.y * 0.5) * size.height, depth: v.z, w: overlay.labelWidth(label), pinned });
+        else overlay.place(label, 0, 0, 0, false);
       }
       if (bubble) {
-        v.set(a.x + ox, h + 0.52, a.z).project(camera);
+        v.set(a.x + ox, h + 0.52, a.z + oz).project(camera);
         const on = v.z < 1;
         const margin = Math.min(138, size.width * 0.31 + 8); // keep the whole bubble on screen
         const bx = THREE.MathUtils.clamp((v.x * 0.5 + 0.5) * size.width, margin, Math.max(margin, size.width - margin));
         overlay.place(bubble, bx, (0.5 - v.y * 0.5) * size.height, 20000 + Math.round((1 - v.z) * 5000), on);
       }
+    }
+
+    // Declutter: selected first, then nearest; a label that would overlap an already placed one is hidden.
+    cands.sort((p, q) => (p.pinned === q.pinned ? p.depth - q.depth : p.pinned ? -1 : 1));
+    const boxes = placedBoxes.current;
+    boxes.length = 0;
+    for (const cd of cands) {
+      const x0 = cd.x - cd.w / 2 + 3, x1 = cd.x + cd.w / 2 - 3, y0 = cd.y - 10, y1 = cd.y + 10;
+      let free = true;
+      for (let i = 0; i < boxes.length && free; i += 4) {
+        if (x0 < boxes[i + 2] && x1 > boxes[i] && y0 < boxes[i + 3] && y1 > boxes[i + 1]) free = false;
+      }
+      if (free || cd.pinned) boxes.push(x0, y0, x1, y1);
+      overlay.place(cd.el, cd.x, cd.y, 100 + Math.round((1 - cd.depth) * 5000), free || cd.pinned);
     }
 
     // End-to-end test hook (throttled).

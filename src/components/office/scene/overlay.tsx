@@ -24,13 +24,25 @@ export class OverlayRegistry {
       const map = kind === "label" ? this.labels : this.bubbles;
       fn = (el) => {
         const prev = map.get(slug);
-        if (prev) this.last.delete(prev);
+        if (prev) { this.last.delete(prev); this.widths.delete(prev); }
         if (el) map.set(slug, el);
         else map.delete(slug);
       };
       this.binders.set(key, fn);
     }
     return fn;
+  }
+
+  private widths = new Map<HTMLElement, { text: string; w: number }>();
+
+  /** Rendered label width in CSS px, measured once per text (labels are laid out even while hidden). */
+  labelWidth(el: HTMLElement): number {
+    const text = el.textContent ?? "";
+    const cached = this.widths.get(el);
+    if (cached && cached.text === text) return cached.w;
+    const w = (el.firstElementChild as HTMLElement | null)?.offsetWidth || text.length * 7 + 40;
+    this.widths.set(el, { text, w });
+    return w;
   }
 
   /** Writes a screen position (CSS px) — skipped when unchanged to avoid style churn. */

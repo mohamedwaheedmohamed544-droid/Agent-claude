@@ -464,9 +464,15 @@ export function generateOfficePlan(spec: OfficeLayoutSpec): OfficePlan {
   return plan;
 }
 
-/** World-space x offset of a floor in the current view ("all" = floors side by side, otherwise stacked at origin). */
-export function floorOffset(plan: OfficePlan, floor: number, view: number | "all"): number {
-  return view === "all" ? floor * (plan.width + FLOOR_GAP) : 0;
+/**
+ * World-space offset of a floor in the current view. A single floor sits at the origin; the "all" view is an
+ * exploded grid (two columns from three floors up) so every floor stays readable from above.
+ */
+export function floorOffset(plan: OfficePlan, floor: number, view: number | "all"): Vec2 {
+  if (view !== "all") return { x: 0, z: 0 };
+  const cols = plan.floors.length <= 2 ? plan.floors.length : 2;
+  const depth = Math.max(...plan.floors.map((f) => f.bounds.maxZ));
+  return { x: (floor % cols) * (plan.width + FLOOR_GAP), z: Math.floor(floor / cols) * (depth + FLOOR_GAP) };
 }
 
 export function floorVisible(floor: number, view: number | "all") {

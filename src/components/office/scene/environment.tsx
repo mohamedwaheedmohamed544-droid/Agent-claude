@@ -77,7 +77,7 @@ function wallBox(a: Vec2, b: Vec2, height: number, thickness: number, y0 = 0) {
 const INWARD: Record<Exclude<WallSide, "south">, [number, number]> = { north: [0, 1], west: [1, 0], east: [-1, 0] };
 
 /** Exterior wall that fades out when the camera orbits behind it, so the office stays readable. */
-function FadingWall({ fp, side, offset }: { fp: FloorPlan; side: Exclude<WallSide, "south">; offset: number }) {
+function FadingWall({ fp, side, offset }: { fp: FloorPlan; side: Exclude<WallSide, "south">; offset: Vec2 }) {
   const seg = fp.walls.find((w) => w.side === side)!;
   const geometry = useDisposable(() => {
     const [nx, nz] = INWARD[side];
@@ -90,7 +90,7 @@ function FadingWall({ fp, side, offset }: { fp: FloorPlan; side: Exclude<WallSid
   const opacity = useRef(1);
   useFrame(({ camera }, dt) => {
     const [nx, nz] = INWARD[side];
-    const px = seg.a.x + offset, pz = seg.a.z;
+    const px = seg.a.x + offset.x, pz = seg.a.z + offset.z;
     const signed = (camera.position.x - px) * nx + (camera.position.z - pz) * nz;
     const target = signed < -0.5 ? 0.1 : signed < 1.5 ? 0.1 + 0.9 * ((signed + 0.5) / 2) : 1;
     opacity.current += (target - opacity.current) * (1 - Math.exp(-8 * Math.min(dt, 0.1)));
@@ -102,7 +102,7 @@ function FadingWall({ fp, side, offset }: { fp: FloorPlan; side: Exclude<WallSid
   return <mesh geometry={geometry} material={material} castShadow receiveShadow raycast={() => null} />;
 }
 
-function Shell({ fp, offset }: { fp: FloorPlan; offset: number }) {
+function Shell({ fp, offset }: { fp: FloorPlan; offset: Vec2 }) {
   const { res, tier } = useScene();
   const geo = useGeometries(() => {
     const glassSegs = fp.walls.filter((w) => w.kind === "glass");
@@ -400,17 +400,17 @@ function Decor({ fp }: { fp: FloorPlan }) {
 export interface OfficeEnvironmentProps {
   plan: OfficePlan;
   view: number | "all";
-  offsets: number[];
+  offsets: Vec2[];
   onFloorClick: () => void;
   statusByDesk: Map<string, AgentStatus>;
   accentByDesk: Map<string, string>;
 }
 
 function FloorView({ fp, offset, visible, onFloorClick, statusByDesk, accentByDesk }: {
-  fp: FloorPlan; offset: number; visible: boolean; onFloorClick: () => void; statusByDesk: Map<string, AgentStatus>; accentByDesk: Map<string, string>;
+  fp: FloorPlan; offset: Vec2; visible: boolean; onFloorClick: () => void; statusByDesk: Map<string, AgentStatus>; accentByDesk: Map<string, string>;
 }) {
   return (
-    <group position-x={offset} visible={visible}>
+    <group position={[offset.x, 0, offset.z]} visible={visible}>
       <FloorSlab fp={fp} onMiss={onFloorClick} />
       <Rugs fp={fp} />
       <Shell fp={fp} offset={offset} />
@@ -424,6 +424,8 @@ function FloorView({ fp, offset, visible, onFloorClick, statusByDesk, accentByDe
   );
 }
 
+const ORIGIN: Vec2 = { x: 0, z: 0 };
+
 /** All floors of the plan. Static geometry is keyed by layout revision: rebuilt (and the old disposed) only when it changes. */
 export function OfficeEnvironment({ plan, view, offsets, onFloorClick, statusByDesk, accentByDesk }: OfficeEnvironmentProps) {
   return (
@@ -436,7 +438,7 @@ export function OfficeEnvironment({ plan, view, offsets, onFloorClick, statusByD
         <FloorView
           key={`${plan.revision}:${fp.index}`}
           fp={fp}
-          offset={offsets[fp.index] ?? 0}
+          offset={offsets[fp.index] ?? ORIGIN}
           visible={view === "all" || view === fp.index}
           onFloorClick={onFloorClick}
           statusByDesk={statusByDesk}

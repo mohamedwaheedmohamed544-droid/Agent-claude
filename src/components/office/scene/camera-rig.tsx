@@ -6,7 +6,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import type { OfficeZone } from "@/lib/office/types";
 import { useScene } from "./context";
-import { floorVisible, type OfficePlan, type Rect } from "./plan";
+import { floorVisible, type OfficePlan, type Rect, type Vec2 } from "./plan";
 
 type Controls = ComponentRef<typeof OrbitControls>;
 
@@ -29,13 +29,14 @@ function frame(r: Rect, isZone: boolean, camera: THREE.PerspectiveCamera, aspect
   return { target: center, position: center.clone().addScaledVector(portrait ? VIEW_PORTRAIT : VIEW_LANDSCAPE, dist), dist };
 }
 
-function visibleBounds(plan: OfficePlan, view: number | "all", offsets: number[]): Rect {
+const ZERO: Vec2 = { x: 0, z: 0 };
+export function visibleBounds(plan: OfficePlan, view: number | "all", offsets: Vec2[]): Rect {
   const r: Rect = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
   for (const f of plan.floors) {
     if (!floorVisible(f.index, view)) continue;
-    const o = offsets[f.index] ?? 0;
-    r.minX = Math.min(r.minX, f.bounds.minX + o); r.maxX = Math.max(r.maxX, f.bounds.maxX + o);
-    r.minZ = Math.min(r.minZ, f.bounds.minZ); r.maxZ = Math.max(r.maxZ, f.bounds.maxZ);
+    const o = offsets[f.index] ?? ZERO;
+    r.minX = Math.min(r.minX, f.bounds.minX + o.x); r.maxX = Math.max(r.maxX, f.bounds.maxX + o.x);
+    r.minZ = Math.min(r.minZ, f.bounds.minZ + o.z); r.maxZ = Math.max(r.maxZ, f.bounds.maxZ + o.z);
   }
   return Number.isFinite(r.minX) ? r : { minX: -10, maxX: 10, minZ: 0, maxZ: 14 };
 }
@@ -43,7 +44,7 @@ function visibleBounds(plan: OfficePlan, view: number | "all", offsets: number[]
 export interface CameraRigProps {
   plan: OfficePlan;
   view: number | "all";
-  offsets: number[];
+  offsets: Vec2[];
   focusZone: OfficeZone | null;
   follow: string | null;
   defaultView: "overview" | "executive";
@@ -81,13 +82,13 @@ export function CameraRig({ plan, view, offsets, focusZone, follow, defaultView,
     const aspect = size.width / size.height;
     let f = overview;
     if (focusInfo && floorVisible(focusInfo.floor, view)) {
-      const o = offsets[focusInfo.floor] ?? 0;
-      f = frame({ minX: focusInfo.rect.minX + o, maxX: focusInfo.rect.maxX + o, minZ: focusInfo.rect.minZ, maxZ: focusInfo.rect.maxZ }, true, camera, aspect);
+      const o = offsets[focusInfo.floor] ?? ZERO;
+      f = frame({ minX: focusInfo.rect.minX + o.x, maxX: focusInfo.rect.maxX + o.x, minZ: focusInfo.rect.minZ + o.z, maxZ: focusInfo.rect.maxZ + o.z }, true, camera, aspect);
     } else if (!initialized.current && defaultView === "executive") {
       const exec = [...plan.zones.values()].find((z) => z.kind === "executive" && floorVisible(z.floor, view));
       if (exec) {
-        const o = offsets[exec.floor] ?? 0;
-        f = frame({ minX: exec.rect.minX + o - 2, maxX: exec.rect.maxX + o + 2, minZ: exec.rect.minZ - 1, maxZ: exec.rect.maxZ + 2 }, true, camera, aspect);
+        const o = offsets[exec.floor] ?? ZERO;
+        f = frame({ minX: exec.rect.minX + o.x - 2, maxX: exec.rect.maxX + o.x + 2, minZ: exec.rect.minZ + o.z - 1, maxZ: exec.rect.maxZ + o.z + 2 }, true, camera, aspect);
       }
     }
     if (!initialized.current || reducedMotion) {
@@ -126,16 +127,16 @@ export function CameraRig({ plan, view, offsets, focusZone, follow, defaultView,
           lastFollowFloor.current = a.floor;
           floorChange.current?.(a.floor);
         } else if (floorVisible(a.floor, view)) lastFollowFloor.current = a.floor;
-        const o = offsets[a.floor] ?? 0;
+        const o = offsets[a.floor] ?? ZERO;
         const fb = plan.floors[a.floor]?.bounds ?? bounds;
-        t.set(a.x + o, 1.1 - 0.35 * a.sit, a.z);
+        t.set(a.x + o.x, 1.1 - 0.35 * a.sit, a.z + o.z);
         const dist = THREE.MathUtils.clamp(camera.position.distanceTo(c.target), MIN_DIST, 18);
         // Behind and above the character, at the user's zoom distance, staying inside the building.
         off.set(-Math.sin(a.yaw), 0, -Math.cos(a.yaw)).multiplyScalar(dist * 0.62);
         off.y = dist * 0.78;
         v.copy(t).add(off);
-        v.x = THREE.MathUtils.clamp(v.x, fb.minX + o + 0.6, fb.maxX + o - 0.6);
-        v.z = THREE.MathUtils.clamp(v.z, fb.minZ + 0.6, fb.maxZ + 4);
+        v.x = THREE.MathUtils.clamp(v.x, fb.minX + o.x + 0.6, fb.maxX + o.x - 0.6);
+        v.z = THREE.MathUtils.clamp(v.z, fb.minZ + o.z + 0.6, fb.maxZ + o.z + 4);
         const k = reducedMotion ? 1 : 1 - Math.exp(-3.2 * dt);
         c.target.lerp(t, k);
         camera.position.lerp(v, k);

@@ -11,9 +11,9 @@ import { OfficeSim } from "./simulation";
 import { OfficeEnvironment } from "./environment";
 import { OfficeDisplays } from "./displays";
 import { Characters } from "./characters";
-import { CameraRig } from "./camera-rig";
+import { CameraRig, visibleBounds } from "./camera-rig";
 import { AgentOverlay, OverlayRegistry } from "./overlay";
-import { floorOffset, floorVisible, generateOfficePlan, zoneLabel as planZoneLabel, type OfficePlan, type Rect } from "./plan";
+import { floorOffset, generateOfficePlan, zoneLabel as planZoneLabel, type OfficePlan, type Rect } from "./plan";
 
 export interface OfficeSceneProps {
   profiles: AgentProfile[];
@@ -146,17 +146,6 @@ function Feeds({ sim, plan, layout, profiles, presence, messages, events }: {
   useLayoutEffect(() => { sim.setMessages(messages); }, [sim, messages]);
   useLayoutEffect(() => { sim.ingestEvents(events); }, [sim, events]);
   return null;
-}
-
-function visibleBounds(plan: OfficePlan, view: number | "all", offsets: number[]): Rect {
-  const r: Rect = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
-  for (const f of plan.floors) {
-    if (!floorVisible(f.index, view)) continue;
-    const o = offsets[f.index] ?? 0;
-    r.minX = Math.min(r.minX, f.bounds.minX + o); r.maxX = Math.max(r.maxX, f.bounds.maxX + o);
-    r.minZ = Math.min(r.minZ, f.bounds.minZ); r.maxZ = Math.max(r.maxZ, f.bounds.maxZ);
-  }
-  return Number.isFinite(r.minX) ? r : { minX: -10, maxX: 10, minZ: 0, maxZ: 14 };
 }
 
 export default function OfficeScene(props: OfficeSceneProps): JSX.Element {
