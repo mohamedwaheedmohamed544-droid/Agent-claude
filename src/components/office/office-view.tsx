@@ -150,15 +150,15 @@ export function OfficeView() {
           {showScene && (
             <div className="flex flex-wrap items-center gap-2 sm:ms-auto">
               {view === "departments" && (
-                <Select value={zone} onChange={(e) => setZone(e.target.value as OfficeZone)} className="h-8 w-auto text-[12.5px]" aria-label={t("office.view.departments")}>
+                <Select value={zone} onChange={(e) => setZone(e.target.value as OfficeZone)} className="h-8 text-[12.5px]" style={{ width: "auto" }} aria-label={t("office.view.departments")}>
                   {ZONES.map((z) => <option key={z} value={z}>{t(`office.zone.${z}`)}</option>)}
                 </Select>
               )}
-              <Select value={cameraMode} onChange={(e) => setCameraMode(e.target.value as "orbit" | "follow")} className="h-8 w-auto text-[12.5px]" aria-label="camera">
+              <Select value={cameraMode} onChange={(e) => setCameraMode(e.target.value as "orbit" | "follow")} className="h-8 text-[12.5px]" style={{ width: "auto" }} aria-label="camera">
                 <option value="orbit">{t("office.camera.orbit")}</option>
                 <option value="follow" disabled={!selected}>{t("office.camera.follow")}</option>
               </Select>
-              <Select value={quality} onChange={(e) => setQ(e.target.value as "auto" | "high" | "low")} className="h-8 w-auto text-[12.5px]" aria-label={t("office.quality")}>
+              <Select value={quality} onChange={(e) => setQ(e.target.value as "auto" | "high" | "low")} className="h-8 text-[12.5px]" style={{ width: "auto" }} aria-label={t("office.quality")}>
                 {(["auto", "high", "low"] as const).map((q) => <option key={q} value={q}>{t("office.quality")}: {t(`office.quality.${q}`)}</option>)}
               </Select>
               <button onClick={() => setVoice(!voice)} aria-pressed={voice} title={t("office.voice")} aria-label={t("office.voice")}

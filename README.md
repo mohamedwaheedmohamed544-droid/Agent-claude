@@ -22,6 +22,7 @@ See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the design, task lifecy
 | Memory | User / workspace / task memory with semantic retrieval; agent-proposed memories require approval; secrets are rejected |
 | Deliverables | Word (.docx, RTL-aware) and Excel (.xlsx) generation, email drafts, reports |
 | Integrations | Gmail & Outlook (search, send), Google & Outlook Calendar, Google Drive (search, upload) via OAuth; webhooks; Claude web search |
+| Virtual Office | Live 3D office (React Three Fiber) where each agent is an Arabic-named character — راشد (orchestrator), باحث, رائد, بيان, قلم, بصيرة, تميم, أثر — driven only by real backend events: delegation walks, working/reading/typing at desks, real agent-to-agent messages as speech bubbles, real meetings (2 rounds of agent contributions + chair's decisions and action items) in the glass meeting room. Live via Server-Sent Events; agent panels with assign/meeting/pause actions through the normal approval and permission system; dashboard, department, list and task views; WebGL fallback |
 | Control | Emergency stop, per-tool enable/disable, agent prompt/tool/model customisation with version history, roles (owner/admin/member/viewer), audit log, usage & cost analytics, system health |
 
 ## Setup

@@ -32,6 +32,8 @@ test.describe("Nexus Office acceptance (real backend → live 3D scene)", () => 
 
   test.beforeAll(async ({ browser }) => {
     page = await browser.newPage();
+    // Software rendering in CI is slow; the low tier keeps frame time reasonable (behaviour is identical).
+    await page.addInitScript(() => { try { localStorage.setItem("nexus-office-quality", "low"); } catch { /* ignore */ } });
     const email = `office-${randomUUID().slice(0, 8)}@example.com`;
     const r = await page.request.post("/api/auth/signup", { data: { name: "Office Owner", email, password: PASSWORD } });
     expect(r.status()).toBe(200);
