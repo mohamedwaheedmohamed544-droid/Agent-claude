@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import * as THREE from "three";
-import type { AgentPresence, AgentProfile, AgentStatus, OfficeZone } from "@/lib/office/types";
-import { DEPARTMENT_DISPLAYS, EXECUTIVE_WALL, MEETING_SCREEN, OFFICE_ZONE_LABELS, type DisplaySpec } from "./layout";
+import type { AgentPresence, AgentProfile, AgentStatus } from "@/lib/office/types";
+import type { Display, OfficePlan, Vec2 } from "./plan";
 import { truncate } from "./simulation";
 import { local } from "./geometry";
 
@@ -13,11 +13,13 @@ import { local } from "./geometry";
  */
 
 export const STATUS_COLORS: Record<AgentStatus, string> = {
-  idle: "#9ca3af", working: "#6366f1", waiting: "#f59e0b", meeting: "#8b5cf6", error: "#ef4444", paused: "#6b7280",
+  idle: "#9ca3af", working: "#6366f1", thinking: "#a855f7", collaborating: "#0ea5e9", waiting: "#f59e0b", meeting: "#8b5cf6", error: "#ef4444", paused: "#6b7280",
 };
 export const STATUS_TEXT: Record<AgentStatus, { en: string; ar: string }> = {
   idle: { en: "Idle", ar: "متفرغ" },
   working: { en: "Working", ar: "يعمل" },
+  thinking: { en: "Thinking", ar: "يفكّر" },
+  collaborating: { en: "Collaborating", ar: "يتعاون" },
   waiting: { en: "Waiting", ar: "بانتظار" },
   meeting: { en: "In a meeting", ar: "في اجتماع" },
   error: { en: "Error", ar: "خطأ" },
@@ -100,21 +102,6 @@ function background(ctx: CanvasRenderingContext2D, w: number, h: number, accent:
   ctx.fillRect(0, 0, w, 8);
 }
 
-function statusPill(ctx: CanvasRenderingContext2D, status: AgentStatus, x: number, y: number, size: number, font: string) {
-  const label = `${STATUS_TEXT[status].en} · ${STATUS_TEXT[status].ar}`;
-  ctx.font = `600 ${size}px ${font}`;
-  const w = ctx.measureText(label).width + size * 2.2;
-  roundRect(ctx, x, y, w, size * 1.8, size * 0.9);
-  ctx.fillStyle = `${STATUS_COLORS[status]}33`;
-  ctx.fill();
-  ctx.fillStyle = STATUS_COLORS[status];
-  ctx.beginPath(); ctx.arc(x + size * 0.9, y + size * 0.9, size * 0.32, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = "#e5e7eb";
-  ctx.textBaseline = "middle";
-  ctx.fillText(label, x + size * 1.5, y + size * 0.95);
-  ctx.textBaseline = "alphabetic";
-  return w;
-}
 
 function Panel({ spec, material }: { spec: { x: number; y: number; z: number; yaw: number; width: number; height: number }; material: THREE.Material }) {
   const pos = local(spec.x, spec.z, spec.yaw, 0, 0.005);
@@ -125,61 +112,64 @@ function Panel({ spec, material }: { spec: { x: number; y: number; z: number; ya
   );
 }
 
-function DepartmentDisplay({ spec, profile, presence }: { spec: DisplaySpec; profile: AgentProfile | undefined; presence: AgentPresence | undefined }) {
+/** Department sign: name (bilingual per locale), colour, and the live roster of its members. */
+function DepartmentSign({ spec, name, nameAr, color, members, presence, locale }: {
+  spec: Display; name: string; nameAr: string; color: string; members: AgentProfile[]; presence: Map<string, AgentPresence>; locale: "en" | "ar";
+}) {
   const W = 1024, H = Math.round((1024 * spec.height) / spec.width);
   const { ctx, texture, material } = useCanvasTexture(W, H);
   const fonts = useFontsReady();
   useEffect(() => {
     const font = fontStack();
-    const accent = profile?.color ?? "#6366f1";
-    background(ctx, W, H, accent);
-    const label = OFFICE_ZONE_LABELS[spec.zone];
-    ctx.fillStyle = "#94a3b8";
-    ctx.font = `600 30px ${font}`;
-    ctx.fillText(label.en.toUpperCase(), 48, 70);
+    background(ctx, W, H, color);
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 8, 14, H - 8);
+    ctx.fillStyle = "#f8fafc";
+    ctx.font = `700 64px ${font}`;
     ctx.direction = "rtl"; ctx.textAlign = "right";
-    ctx.fillText(label.ar, W - 48, 70);
+    ctx.fillText(nameAr || name, W - 40, 88);
     ctx.direction = "ltr"; ctx.textAlign = "left";
-
-    if (profile) {
-      ctx.fillStyle = accent;
-      ctx.beginPath(); ctx.arc(92, 160, 44, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = "#ffffff";
-      ctx.font = `700 44px ${font}`;
-      ctx.textAlign = "center"; ctx.direction = "rtl";
-      ctx.fillText(Array.from(profile.nameAr)[0] ?? "", 92, 176);
-      ctx.textAlign = "left"; ctx.direction = "ltr";
-      ctx.fillStyle = "#f8fafc";
-      ctx.font = `700 46px ${font}`;
-      ctx.fillText(`${profile.nameAr}  ·  ${profile.nameEn}`, 158, 152);
+    if (locale === "en") {
       ctx.fillStyle = "#94a3b8";
-      ctx.font = `500 26px ${font}`;
-      ctx.fillText(`${profile.titleEn} — ${profile.titleAr}`, 158, 192);
-      const status = presence?.status ?? "idle";
-      statusPill(ctx, status, 48, 236, 26, font);
-
-      ctx.fillStyle = "rgba(148,163,184,0.18)";
-      ctx.fillRect(48, 316, W - 96, 2);
+      ctx.font = `600 40px ${font}`;
+      ctx.fillText(name, 44, 88);
+    }
+    const rowH = 52, top = 150;
+    const maxRows = Math.max(1, Math.floor((H - top - 10) / rowH));
+    const shown = members.slice(0, members.length > maxRows ? maxRows - 1 : maxRows);
+    shown.forEach((p, i) => {
+      const pr = presence.get(p.slug);
+      const status = pr?.status ?? "idle";
+      const y = top + i * rowH;
+      ctx.fillStyle = STATUS_COLORS[status];
+      ctx.beginPath(); ctx.arc(60, y - 12, 11, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#e2e8f0";
+      ctx.font = `600 36px ${font}`;
+      ctx.fillText(locale === "en" ? `${p.nameAr} · ${p.nameEn}` : p.nameAr, 90, y);
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = `500 30px ${font}`;
+      ctx.direction = "rtl"; ctx.textAlign = "right";
+      ctx.fillText(STATUS_TEXT[status][locale], W - 40, y);
+      ctx.direction = "ltr"; ctx.textAlign = "left";
+    });
+    if (members.length > shown.length) {
       ctx.fillStyle = "#64748b";
-      ctx.font = `600 24px ${font}`;
-      ctx.fillText("CURRENT ACTIVITY · النشاط الحالي", 48, 362);
-      const activity = presence?.activity || presence?.taskTitle;
-      ctx.fillStyle = activity ? "#e2e8f0" : "#64748b";
-      ctx.font = `500 34px ${font}`;
-      const y = wrapText(ctx, activity ? truncate(activity, 200) : "No active task · لا توجد مهمة حالية", 48, 412, W - 96, 46, 3);
-      if (presence?.waitingFor) {
-        ctx.fillStyle = "#fbbf24";
-        ctx.font = `600 26px ${font}`;
-        wrapText(ctx, `Waiting for: ${presence.waitingFor}`, 48, y + 8, W - 96, 34, 1);
-      }
+      ctx.font = `600 30px ${font}`;
+      ctx.fillText(`+${members.length - shown.length}`, 90, top + shown.length * rowH);
+    }
+    if (members.length === 0) {
+      ctx.fillStyle = "#64748b";
+      ctx.font = `500 32px ${font}`;
+      ctx.fillText(locale === "en" ? "No agents assigned" : "لا يوجد وكلاء", 44, top);
     }
     texture.needsUpdate = true;
-  }, [ctx, texture, W, H, spec.zone, profile, presence, fonts]);
+  }, [ctx, texture, W, H, name, nameAr, color, members, presence, locale, fonts]);
   return <Panel spec={spec} material={material} />;
 }
 
-function ExecutiveWall({ profiles, presence }: { profiles: AgentProfile[]; presence: Map<string, AgentPresence> }) {
-  const W = 2048, H = Math.round((2048 * EXECUTIVE_WALL.height) / EXECUTIVE_WALL.width);
+/** Live operations wall in an executive office: every agent's real status and current activity. */
+function ExecutiveWall({ spec, profiles, presence }: { spec: Display; profiles: AgentProfile[]; presence: Map<string, AgentPresence> }) {
+  const W = 2048, H = Math.round((2048 * spec.height) / spec.width);
   const { ctx, texture, material } = useCanvasTexture(W, H);
   const fonts = useFontsReady();
   useEffect(() => {
@@ -192,62 +182,82 @@ function ExecutiveWall({ profiles, presence }: { profiles: AgentProfile[]; prese
     ctx.fillText("العمليات المباشرة", W - 40, 58);
     ctx.direction = "ltr"; ctx.textAlign = "left";
     const counts = new Map<AgentStatus, number>();
-    for (const p of profiles) { const s = presence.get(p.slug)?.status ?? "idle"; counts.set(s, (counts.get(s) ?? 0) + 1); }
+    for (const p of profiles) { const st = presence.get(p.slug)?.status ?? "idle"; counts.set(st, (counts.get(st) ?? 0) + 1); }
     ctx.font = `500 24px ${font}`;
     let cx = 520;
-    for (const s of ["working", "waiting", "meeting", "error", "idle"] as AgentStatus[]) {
-      ctx.fillStyle = STATUS_COLORS[s];
+    for (const st of ["working", "thinking", "collaborating", "waiting", "meeting", "error", "idle"] as AgentStatus[]) {
+      const n = counts.get(st) ?? 0;
+      if (!n && st !== "working" && st !== "idle") continue;
+      ctx.fillStyle = STATUS_COLORS[st];
       ctx.beginPath(); ctx.arc(cx, 50, 8, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = "#cbd5e1";
-      const t = `${STATUS_TEXT[s].en} ${counts.get(s) ?? 0}`;
+      const t = `${STATUS_TEXT[st].en} ${n}`;
       ctx.fillText(t, cx + 16, 58);
-      cx += ctx.measureText(t).width + 56;
+      cx += ctx.measureText(t).width + 52;
     }
-    const cols = 4, gap = 20, top = 90;
+    // Grid adapts to the workforce size; overflow is summarised, never invented.
+    const n = profiles.length;
+    const cols = n <= 8 ? 4 : n <= 18 ? 6 : 8;
+    const gap = 16, top = 90;
+    const maxRows = n <= 8 ? 2 : 3;
+    const capacity = cols * maxRows;
+    const shown = profiles.slice(0, n > capacity ? capacity - 1 : capacity);
+    const rows = Math.max(1, Math.ceil(Math.min(n, capacity) / cols));
     const cw = (W - 80 - gap * (cols - 1)) / cols;
-    const rows = Math.max(1, Math.ceil(profiles.length / cols));
-    const ch = (H - top - 30 - gap * (rows - 1)) / rows;
-    profiles.forEach((p, i) => {
+    const ch = (H - top - 24 - gap * (rows - 1)) / rows;
+    const big = cols <= 4;
+    shown.forEach((p, i) => {
       const x = 40 + (i % cols) * (cw + gap), y = top + Math.floor(i / cols) * (ch + gap);
       const pr = presence.get(p.slug);
       const status = pr?.status ?? "idle";
-      roundRect(ctx, x, y, cw, ch, 18);
+      roundRect(ctx, x, y, cw, ch, 16);
       ctx.fillStyle = "rgba(30,41,59,0.85)";
       ctx.fill();
       ctx.fillStyle = p.color;
-      ctx.fillRect(x, y + 18, 6, ch - 36);
+      ctx.fillRect(x, y + 14, 6, ch - 28);
       ctx.fillStyle = "#f8fafc";
-      ctx.font = `700 34px ${font}`;
-      ctx.fillText(`${p.nameAr} · ${p.nameEn}`, x + 28, y + 50);
+      ctx.font = `700 ${big ? 34 : 26}px ${font}`;
+      ctx.fillText(big ? `${p.nameAr} · ${p.nameEn}` : p.nameAr, x + 22, y + (big ? 50 : 40));
       ctx.fillStyle = STATUS_COLORS[status];
-      ctx.beginPath(); ctx.arc(x + cw - 34, y + 38, 11, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x + cw - 26, y + 30, 10, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = "#94a3b8";
-      ctx.font = `500 22px ${font}`;
-      ctx.fillText(`${STATUS_TEXT[status].en} · ${STATUS_TEXT[status].ar}`, x + 28, y + 84);
+      ctx.font = `500 ${big ? 22 : 19}px ${font}`;
+      ctx.fillText(`${STATUS_TEXT[status].en} · ${STATUS_TEXT[status].ar}`, x + 22, y + (big ? 84 : 68));
       const act = pr?.activity || pr?.taskTitle;
-      ctx.fillStyle = act ? "#e2e8f0" : "#475569";
-      ctx.font = `500 24px ${font}`;
-      wrapText(ctx, act ? truncate(act, 120) : "—", x + 28, y + 122, cw - 56, 30, 2);
+      if (ch > 110) {
+        ctx.fillStyle = act ? "#e2e8f0" : "#475569";
+        ctx.font = `500 ${big ? 24 : 19}px ${font}`;
+        wrapText(ctx, act ? truncate(act, 120) : "—", x + 22, y + (big ? 122 : 100), cw - 44, big ? 30 : 24, 2);
+      }
     });
+    if (n > shown.length) {
+      const i = shown.length;
+      const x = 40 + (i % cols) * (cw + gap), y = top + Math.floor(i / cols) * (ch + gap);
+      ctx.fillStyle = "#64748b";
+      ctx.font = `600 32px ${font}`;
+      ctx.fillText(`+${n - shown.length}`, x + 22, y + ch / 2 + 10);
+    }
     texture.needsUpdate = true;
   }, [ctx, texture, W, H, profiles, presence, fonts]);
-  return <Panel spec={{ ...EXECUTIVE_WALL, yaw: 0 }} material={material} />;
+  return <Panel spec={spec} material={material} />;
 }
 
-function MeetingScreen({ profiles, presence, lastStatement }: { profiles: AgentProfile[]; presence: Map<string, AgentPresence>; lastStatement: { agent: string; content: string } | null }) {
-  const W = 1024, H = Math.round((1024 * MEETING_SCREEN.height) / MEETING_SCREEN.width);
+function MeetingScreen({ spec, roomName, roomNameAr, profiles, presence, lastStatement }: {
+  spec: Display; roomName: string; roomNameAr: string; profiles: AgentProfile[]; presence: Map<string, AgentPresence>; lastStatement: { agent: string; content: string } | null;
+}) {
+  const W = 1024, H = Math.round((1024 * spec.height) / spec.width);
   const { ctx, texture, material } = useCanvasTexture(W, H);
   const fonts = useFontsReady();
   useEffect(() => {
     const font = fontStack();
-    const participants = profiles.filter((p) => presence.get(p.slug)?.status === "meeting");
+    const participants = profiles.filter((p) => { const pr = presence.get(p.slug); return pr?.status === "meeting" && pr.zone === spec.zone; });
     const live = participants.length > 0;
     background(ctx, W, H, live ? "#8b5cf6" : "#334155");
     ctx.fillStyle = "#f8fafc";
     ctx.font = `700 40px ${font}`;
-    ctx.fillText(live ? "Meeting in progress" : "Meeting room", 48, 84);
+    ctx.fillText(live ? "Meeting in progress" : roomName, 48, 84);
     ctx.direction = "rtl"; ctx.textAlign = "right";
-    ctx.fillText(live ? "اجتماع جارٍ" : "قاعة الاجتماعات", W - 48, 84);
+    ctx.fillText(live ? "اجتماع جارٍ" : roomNameAr, W - 48, 84);
     ctx.direction = "ltr"; ctx.textAlign = "left";
     if (!live) {
       ctx.fillStyle = "#64748b";
@@ -272,34 +282,77 @@ function MeetingScreen({ profiles, presence, lastStatement }: { profiles: AgentP
       }
     }
     texture.needsUpdate = true;
-  }, [ctx, texture, W, H, profiles, presence, lastStatement, fonts]);
-  return <Panel spec={{ x: MEETING_SCREEN.x, y: MEETING_SCREEN.y, z: MEETING_SCREEN.z, yaw: -Math.PI / 2, width: MEETING_SCREEN.width, height: MEETING_SCREEN.height }} material={material} />;
+  }, [ctx, texture, W, H, spec.zone, roomName, roomNameAr, profiles, presence, lastStatement, fonts]);
+  return <Panel spec={spec} material={material} />;
 }
 
-export function OfficeDisplays({ profiles, presence, lastStatement }: {
+/** All live screens of the visible floors. Remounted with the layout revision. */
+export function OfficeDisplays({ plan, view, offsets, profiles, presence, lastStatement, locale }: {
+  plan: OfficePlan;
+  view: number | "all";
+  offsets: Vec2[];
   profiles: AgentProfile[];
   presence: AgentPresence[];
   lastStatement: { agent: string; content: string } | null;
+  locale: "en" | "ar";
 }) {
   // Redraw canvases only when displayed fields change, not on every presence push.
-  const signature = presence.map((p) => [p.agent, p.status, p.activity, p.taskTitle, p.waitingFor, p.meetingId].join("\u0001")).join("\u0002");
+  const signature = presence.map((p) => [p.agent, p.status, p.zone, p.activity, p.taskTitle, p.waitingFor, p.meetingId].join("\u0001")).join("\u0002");
   const byAgent = useMemo(
     () => new Map(presence.map((p) => [p.agent, p])),
     [signature], // eslint-disable-line react-hooks/exhaustive-deps
   );
-  const ownerByZone = useMemo(() => {
-    const m = new Map<OfficeZone, AgentProfile>();
-    for (const p of profiles) if (!m.has(p.deskZone)) m.set(p.deskZone, p);
+  const rosterKey = profiles.map((p) => `${p.slug}:${p.deskZone}:${p.nameAr}:${p.nameEn}:${p.color}`).join("|");
+  const membersByZone = useMemo(() => {
+    const m = new Map<string, AgentProfile[]>();
+    for (const p of profiles) { const list = m.get(p.deskZone) ?? []; list.push(p); m.set(p.deskZone, list); }
     return m;
-  }, [profiles]);
+  }, [rosterKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const stableProfiles = useMemo(() => profiles, [rosterKey]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <group>
-      {DEPARTMENT_DISPLAYS.map((d) => {
-        const owner = ownerByZone.get(d.zone);
-        return <DepartmentDisplay key={d.zone} spec={d} profile={owner} presence={owner ? byAgent.get(owner.slug) : undefined} />;
-      })}
-      <ExecutiveWall profiles={profiles} presence={byAgent} />
-      <MeetingScreen profiles={profiles} presence={byAgent} lastStatement={lastStatement} />
+      {plan.floors.map((fp) => (
+        <group key={`${plan.revision}:${fp.index}`} position={[offsets[fp.index]?.x ?? 0, 0, offsets[fp.index]?.z ?? 0]} visible={view === "all" || view === fp.index}>
+          {view === "all" && <FloorCaption floor={fp.index} x={fp.bounds.minX} z={fp.bounds.maxZ + 2.2} />}
+          {fp.signs.map((d) => {
+            const z = plan.zones.get(d.zone);
+            return <DepartmentSign key={d.zone} spec={d} name={z?.name ?? d.zone} nameAr={z?.nameAr ?? ""} color={z?.color ?? "#6366f1"} members={membersByZone.get(d.zone) ?? EMPTY} presence={byAgent} locale={locale} />;
+          })}
+          {fp.execWalls.map((d) => <ExecutiveWall key={d.zone} spec={d} profiles={stableProfiles} presence={byAgent} />)}
+          {fp.meetingScreens.map((d) => {
+            const z = plan.zones.get(d.zone);
+            return <MeetingScreen key={d.zone} spec={d} roomName={z?.name ?? d.zone} roomNameAr={z?.nameAr ?? ""} profiles={stableProfiles} presence={byAgent} lastStatement={lastStatement} />;
+          })}
+        </group>
+      ))}
     </group>
+  );
+}
+
+const EMPTY: AgentProfile[] = [];
+
+/** Ground caption for the exploded multi-floor view. */
+function FloorCaption({ floor, x, z }: { floor: number; x: number; z: number }) {
+  const { ctx, texture, material } = useCanvasTexture(512, 96);
+  const fonts = useFontsReady();
+  useEffect(() => {
+    const font = fontStack();
+    ctx.clearRect(0, 0, 512, 96);
+    ctx.fillStyle = "rgba(15,21,34,0.82)";
+    roundRect(ctx, 0, 8, 512, 80, 40);
+    ctx.fill();
+    ctx.fillStyle = "#f8fafc";
+    ctx.font = `700 44px ${font}`;
+    ctx.fillText(`FLOOR ${floor + 1}`, 36, 64);
+    ctx.direction = "rtl"; ctx.textAlign = "right";
+    ctx.fillText(`الطابق ${floor + 1}`, 476, 64);
+    ctx.direction = "ltr"; ctx.textAlign = "left";
+    material.transparent = true;
+    texture.needsUpdate = true;
+  }, [ctx, texture, material, floor, fonts]);
+  return (
+    <mesh position={[x + 4.8, 0.02, z]} rotation-x={-Math.PI / 2} material={material} raycast={() => null}>
+      <planeGeometry args={[9.6, 1.8]} />
+    </mesh>
   );
 }

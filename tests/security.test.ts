@@ -177,7 +177,7 @@ describe("agent versioning", () => {
     const b = await makeUser();
     const before = await getAgent(a.workspaceId, "research");
     const updated = await updateWorkspaceAgent(a.workspaceId, "research", a.userId, { systemPrompt: "Custom research prompt for workspace A only." });
-    expect(updated.workspaceScoped).toBe(true);
+    expect(updated.version).toBeGreaterThan(before!.version);
     expect(updated.systemPrompt).toContain("workspace A only");
     expect((await getAgent(b.workspaceId, "research"))!.systemPrompt).toBe(before!.systemPrompt);
     expect((await listAgents(a.workspaceId)).filter((x) => x.slug === "research")).toHaveLength(1);

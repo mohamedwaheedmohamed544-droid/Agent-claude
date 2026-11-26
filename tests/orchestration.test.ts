@@ -6,6 +6,7 @@ import { handleChatMessage, listMessages } from "@/lib/orchestrator/chat";
 import { controlTask, runTask } from "@/lib/orchestrator/engine";
 import { decideApproval, listApprovals } from "@/lib/approvals";
 import { validatePlan, PlanValidationError } from "@/lib/orchestrator/planner";
+import { STARTER_SLUGS } from "@/lib/agents/definitions";
 import { makeUser, taskState } from "./helpers";
 
 beforeAll(async () => {
@@ -16,15 +17,15 @@ beforeAll(async () => {
 describe("planner validation", () => {
   const step = (key: string, deps: string[] = []) => ({ key, agent: "research", title: key, instruction: "x", expected_output: "y", depends_on: deps, condition: null });
   it("rejects cycles", () => {
-    expect(() => validatePlan({ mode: "multi", title: "t", reply: null, steps: [step("a", ["b"]), step("b", ["a"])] })).toThrow(PlanValidationError);
+    expect(() => validatePlan({ mode: "multi", title: "t", reply: null, steps: [step("a", ["b"]), step("b", ["a"])] }, STARTER_SLUGS)).toThrow(PlanValidationError);
   });
   it("rejects unknown agents and dangling deps", () => {
-    expect(() => validatePlan({ mode: "single", title: "t", reply: null, steps: [{ ...step("a"), agent: "hacker" }] })).toThrow(/agent/);
-    expect(() => validatePlan({ mode: "single", title: "t", reply: null, steps: [step("a", ["zzz"])] })).toThrow(/unknown step/);
+    expect(() => validatePlan({ mode: "single", title: "t", reply: null, steps: [{ ...step("a"), agent: "hacker" }] }, STARTER_SLUGS)).toThrow(/agent/);
+    expect(() => validatePlan({ mode: "single", title: "t", reply: null, steps: [step("a", ["zzz"])] }, STARTER_SLUGS)).toThrow(/unknown step/);
   });
   it("requires a reply for direct mode and normalises mode", () => {
-    expect(() => validatePlan({ mode: "direct", title: "t", reply: null, steps: [] })).toThrow();
-    expect(validatePlan({ mode: "single", title: "t", reply: null, steps: [step("a"), step("b", ["a"])] }).mode).toBe("multi");
+    expect(() => validatePlan({ mode: "direct", title: "t", reply: null, steps: [] }, STARTER_SLUGS)).toThrow();
+    expect(validatePlan({ mode: "single", title: "t", reply: null, steps: [step("a"), step("b", ["a"])] }, STARTER_SLUGS).mode).toBe("multi");
   });
 });
 

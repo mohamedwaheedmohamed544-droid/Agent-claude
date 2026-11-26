@@ -1,18 +1,19 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useState, type JSX } from "react";
+import * as THREE from "three";
 import { Canvas, useThree } from "@react-three/fiber";
 import { AdaptiveDpr, Environment, Lightformer, PerformanceMonitor } from "@react-three/drei";
-import type { ActivityEvent, AgentMessage, AgentPresence, AgentProfile, AgentStatus, OfficeZone } from "@/lib/office/types";
+import type { ActivityEvent, AgentMessage, AgentPresence, AgentProfile, AgentStatus, OfficeLayoutSpec, OfficeZone } from "@/lib/office/types";
 import { SceneContext, type SceneCtx } from "./context";
 import { SceneResources, type QualityTier } from "./resources";
 import { OfficeSim } from "./simulation";
 import { OfficeEnvironment } from "./environment";
 import { OfficeDisplays } from "./displays";
 import { Characters } from "./characters";
-import { CameraRig } from "./camera-rig";
+import { CameraRig, visibleBounds } from "./camera-rig";
 import { AgentOverlay, OverlayRegistry } from "./overlay";
-import { OFFICE_ZONE_LABELS as ZONE_LABELS } from "./layout";
+import { floorOffset, generateOfficePlan, zoneLabel as planZoneLabel, type OfficePlan, type Rect } from "./plan";
 
 export interface OfficeSceneProps {
   profiles: AgentProfile[];
@@ -27,9 +28,18 @@ export interface OfficeSceneProps {
   dimmedAgents: string[];
   quality: "auto" | "high" | "low";
   locale: "en" | "ar";
+  /** Logical office plan from the server; geometry is regenerated only when `layout.revision` changes. */
+  layout: OfficeLayoutSpec;
+  /** Floor to show (0-based), or "all" for the exploded multi-floor view. */
+  floor: number | "all";
+  /** Called when the scene needs another floor (follow mode, department focus). */
+  onFloorChange?: (floor: number) => void;
 }
 
-export const OFFICE_ZONE_LABELS: Record<OfficeZone, { en: string; ar: string }> = ZONE_LABELS;
+/** Localised display name for a department, meeting room or lounge key. */
+export function zoneLabel(layout: OfficeLayoutSpec, key: OfficeZone, locale: "en" | "ar"): string {
+  return planZoneLabel(layout, key, locale);
+}
 
 export function isWebGLAvailable(): boolean {
   if (typeof window === "undefined" || typeof document === "undefined") return false;
@@ -81,16 +91,23 @@ function VisibilityLoop() {
   return null;
 }
 
-function Lighting({ tier, dark }: { tier: QualityTier; dark: boolean }) {
-  const shadows = tier !== "low";
+function Lighting({ tier, dark, bounds }: { tier: QualityTier; dark: boolean; bounds: Rect }) {
+  const cx = (bounds.minX + bounds.maxX) / 2, cz = (bounds.minZ + bounds.maxZ) / 2;
+  const half = Math.max(bounds.maxX - bounds.minX, bounds.maxZ - bounds.minZ) / 2 + 4;
+  // Very wide exploded views would need huge shadow maps; skip shadows there.
+  const shadows = tier !== "low" && half < 60;
   const mapSize = tier === "high" ? 2048 : 1024;
+  const [target] = useState(() => new THREE.Object3D());
+  useLayoutEffect(() => { target.position.set(cx, 0, cz); target.updateMatrixWorld(); }, [target, cx, cz]);
   return (
     <>
       <hemisphereLight args={["#f6f1e7", "#8f8676", dark ? 0.4 : 0.5]} />
       <ambientLight intensity={0.06} />
+      <primitive object={target} />
       <directionalLight
-        key={`${tier}`}
-        position={[12, 22, 15]}
+        key={`${tier}:${half.toFixed(0)}`}
+        target={target}
+        position={[cx + 12, 26, cz + 15]}
         intensity={2.6}
         color="#ffe9cc"
         castShadow={shadows}
@@ -99,11 +116,11 @@ function Lighting({ tier, dark }: { tier: QualityTier; dark: boolean }) {
         shadow-bias={-0.0005}
         shadow-normalBias={0.03}
         shadow-camera-near={2}
-        shadow-camera-far={70}
-        shadow-camera-left={-24}
-        shadow-camera-right={24}
-        shadow-camera-top={20}
-        shadow-camera-bottom={-20}
+        shadow-camera-far={90}
+        shadow-camera-left={-half}
+        shadow-camera-right={half}
+        shadow-camera-top={half}
+        shadow-camera-bottom={-half}
       />
       {/* Local image-based lighting built from light cards (no network fetch). */}
       <Environment resolution={128} frames={1} environmentIntensity={0.38}>
@@ -117,17 +134,26 @@ function Lighting({ tier, dark }: { tier: QualityTier; dark: boolean }) {
   );
 }
 
-function Feeds({ sim, profiles, presence, messages, events }: { sim: OfficeSim; profiles: AgentProfile[]; presence: AgentPresence[]; messages: AgentMessage[]; events: ActivityEvent[] }) {
-  // Order matters: roster → placement → message lookup → transient events.
-  useLayoutEffect(() => { sim.setProfiles(profiles); }, [sim, profiles]);
-  useLayoutEffect(() => { sim.setPresence(presence); }, [sim, presence, profiles]);
+function Feeds({ sim, plan, layout, profiles, presence, messages, events }: {
+  sim: OfficeSim; plan: OfficePlan; layout: OfficeLayoutSpec; profiles: AgentProfile[]; presence: AgentPresence[]; messages: AgentMessage[]; events: ActivityEvent[];
+}) {
+  // Order matters: plan → settings → roster (diffed) → placement → message lookup → transient events.
+  useLayoutEffect(() => { sim.setPlan(plan); }, [sim, plan]);
+  useLayoutEffect(() => { sim.setSettings({ characterScale: layout.characterScale, ambientLounge: layout.ambientLounge }); }, [sim, layout.characterScale, layout.ambientLounge]);
+  useLayoutEffect(() => { sim.setProfiles(profiles); }, [sim, profiles, plan]);
+  useLayoutEffect(() => { sim.setPresence(presence); }, [sim, presence, profiles, plan]);
   useLayoutEffect(() => { sim.setMessages(messages); }, [sim, messages]);
   useLayoutEffect(() => { sim.ingestEvents(events); }, [sim, events]);
   return null;
 }
 
 export default function OfficeScene(props: OfficeSceneProps): JSX.Element {
-  const { profiles, presence, events, messages, selectedAgent, onSelectAgent, cameraMode, focusZone, dimmedAgents, quality, locale } = props;
+  const { profiles, presence, events, messages, selectedAgent, onSelectAgent, cameraMode, focusZone, dimmedAgents, quality, locale, layout, floor, onFloorChange } = props;
+  // Static layout is regenerated only when the server's plan revision changes.
+  const plan = useMemo(() => generateOfficePlan(layout), [layout.revision]); // eslint-disable-line react-hooks/exhaustive-deps
+  const view: number | "all" = floor === "all" && plan.floors.length > 1 ? "all" : Math.min(plan.floors.length - 1, Math.max(0, typeof floor === "number" ? floor : 0));
+  const offsets = useMemo(() => plan.floors.map((f) => floorOffset(plan, f.index, view)), [plan, view]);
+  const bounds = useMemo(() => visibleBounds(plan, view, offsets), [plan, view, offsets]);
   const reducedMotion = usePrefersReducedMotion();
   const dark = useDarkTheme();
   const [sim] = useState(() => new OfficeSim());
@@ -141,17 +167,19 @@ export default function OfficeScene(props: OfficeSceneProps): JSX.Element {
 
   const ctx = useMemo<SceneCtx>(() => ({ res, sim, overlay, tier, locale, reducedMotion }), [res, sim, overlay, tier, locale, reducedMotion]);
 
-  const zoneColors = useMemo(() => {
-    const m: Partial<Record<OfficeZone, string>> = {};
-    for (const p of profiles) if (!m[p.deskZone]) m[p.deskZone] = p.color;
-    return m;
-  }, [profiles]);
-  const statusByZone = useMemo(() => {
+  // Desk monitors reflect their occupant's real status (no occupant → screen off).
+  const { statusByDesk, accentByDesk } = useMemo(() => {
     const byAgent = new Map(presence.map((p) => [p.agent, p.status]));
-    const m: Partial<Record<OfficeZone, AgentStatus>> = {};
-    for (const p of profiles) if (!m[p.deskZone]) m[p.deskZone] = byAgent.get(p.slug) ?? "idle";
-    return m;
-  }, [profiles, presence]);
+    const bySlug = new Map(profiles.map((p) => [p.slug, p]));
+    const status = new Map<string, AgentStatus>(), accent = new Map<string, string>();
+    for (const d of plan.desks.values()) {
+      const occupant = profiles.find((p) => p.workstationId === d.id) ?? (d.agentSlug ? bySlug.get(d.agentSlug) : undefined);
+      if (!occupant) continue;
+      status.set(d.id, byAgent.get(occupant.slug) ?? "idle");
+      accent.set(d.id, occupant.color);
+    }
+    return { statusByDesk: status, accentByDesk: accent };
+  }, [plan, profiles, presence]);
   const lastStatement = useMemo(() => {
     const live = new Set(presence.filter((p) => p.status === "meeting" && p.meetingId).map((p) => p.meetingId));
     for (let i = events.length - 1; i >= 0; i--) {
@@ -177,18 +205,18 @@ export default function OfficeScene(props: OfficeSceneProps): JSX.Element {
       aria-label={label}
       onKeyDown={(e) => { if (e.key === "Escape" && selectedAgent) onSelectAgent(null); }}
     >
-      <Feeds sim={sim} profiles={profiles} presence={presence} messages={messages} events={events} />
+      <Feeds sim={sim} plan={plan} layout={layout} profiles={profiles} presence={presence} messages={messages} events={events} />
       <Canvas
         shadows="percentage"
         dpr={dpr}
         gl={{ antialias: true, powerPreference: "high-performance", alpha: false }}
-        camera={{ fov: 38, near: 0.1, far: 240, position: [6, 30, 32] }}
+        camera={{ fov: 38, near: 0.1, far: 400, position: [6, 30, 32] }}
         performance={{ min: 0.5 }}
         style={{ touchAction: "none" }}
       >
         <SceneContext.Provider value={ctx}>
           <color attach="background" args={[bg]} />
-          <fog attach="fog" args={[bg, 60, 140]} />
+          <fog attach="fog" args={[bg, Math.max(60, (bounds.maxX - bounds.minX) * 1.4), Math.max(140, (bounds.maxX - bounds.minX) * 3.2)]} />
           <VisibilityLoop />
           {quality === "auto" && (
             <>
@@ -201,14 +229,16 @@ export default function OfficeScene(props: OfficeSceneProps): JSX.Element {
               <AdaptiveDpr pixelated={false} />
             </>
           )}
-          <Lighting tier={tier} dark={dark} />
-          <OfficeEnvironment onFloorClick={() => onSelectAgent(null)} zoneColors={zoneColors} statusByZone={statusByZone} />
-          <OfficeDisplays profiles={profiles} presence={presence} lastStatement={lastStatement} />
-          <Characters profiles={profiles} presence={presence} selectedAgent={selectedAgent} dimmedAgents={dimmedAgents} onSelectAgent={onSelectAgent} />
-          <CameraRig focusZone={focusZone} follow={follow} />
+          <Lighting tier={tier} dark={dark} bounds={bounds} />
+          <OfficeEnvironment plan={plan} view={view} offsets={offsets} onFloorClick={() => onSelectAgent(null)} statusByDesk={statusByDesk} accentByDesk={accentByDesk} />
+          <OfficeDisplays plan={plan} view={view} offsets={offsets} profiles={profiles} presence={presence} lastStatement={lastStatement} locale={locale} />
+          <Characters presence={presence} selectedAgent={selectedAgent} dimmedAgents={dimmedAgents} view={view} offsets={offsets}
+            showLabels={layout.showLabels} characterScale={layout.characterScale} onSelectAgent={onSelectAgent} />
+          <CameraRig plan={plan} view={view} offsets={offsets} focusZone={focusZone} follow={follow}
+            defaultView={layout.camera?.defaultView ?? "overview"} autoRotate={Boolean(layout.camera?.autoRotate)} onFloorChange={onFloorChange} />
         </SceneContext.Provider>
       </Canvas>
-      <AgentOverlay sim={sim} registry={overlay} profiles={profiles} statusBy={statusBy} selectedAgent={selectedAgent} dimmed={dimmedSet} locale={locale} onSelectAgent={onSelectAgent} />
+      <AgentOverlay sim={sim} registry={overlay} statusBy={statusBy} selectedAgent={selectedAgent} dimmed={dimmedSet} locale={locale} onSelectAgent={onSelectAgent} />
     </div>
   );
 }

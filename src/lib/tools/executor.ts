@@ -52,14 +52,26 @@ async function integrationConnected(workspaceId: string, providers: string): Pro
  * input validation → integration connected → approval policy (bound to exact params) →
  * idempotency → execution with timeout → logging & audit.
  */
+export interface AgentToolPolicy {
+  /** Require approval for level-3 actions even if the workspace auto-approves them. */
+  alwaysApproveModify?: boolean;
+  /** Re-checked on every call (defence in depth; the runtime factory already filters tools). */
+  maxRiskLevel?: number;
+  restrictedCategories?: string[];
+  memoryAccess?: "own" | "shared";
+}
+
 export async function executeTool(
-  name: string, rawArgs: unknown, ctx: ToolContext, allowedTools: string[],
+  name: string, rawArgs: unknown, ctx: ToolContext, allowedTools: string[], policy: AgentToolPolicy = {},
 ): Promise<ToolOutcome> {
   const tool = getTool(name);
   if (!tool) return { status: "blocked", error: `Unknown tool "${name}"` };
-  if (!allowedTools.includes(name)) {
-    await audit({ workspaceId: ctx.workspaceId, actorType: "agent", actor: ctx.agentSlug, action: "tool.blocked", targetType: "tool", targetId: name, metadata: { reason: "not_allowed_for_agent", taskId: ctx.taskId } });
-    return { status: "blocked", error: `Tool "${name}" is not permitted for this agent` };
+  const denial = !allowedTools.includes(name) ? "not_allowed_for_agent"
+    : policy.maxRiskLevel !== undefined && tool.riskLevel > policy.maxRiskLevel ? "above_agent_risk_ceiling"
+    : policy.restrictedCategories?.includes(tool.category) ? "restricted_category" : null;
+  if (denial) {
+    await audit({ workspaceId: ctx.workspaceId, actorType: "agent", actor: ctx.agentSlug, action: "tool.blocked", targetType: "tool", targetId: name, metadata: { reason: denial, taskId: ctx.taskId } });
+    return { status: "blocked", error: `Tool "${name}" is not permitted for this agent (${denial.replace(/_/g, " ")})` };
   }
   const settings = await getWorkspaceSettings(ctx.workspaceId);
   if (settings.emergencyStop) throw new EmergencyStopError();
@@ -83,7 +95,7 @@ export async function executeTool(
   const idempotencyKey = tool.riskLevel >= 3 ? sha256(`${ctx.workspaceId}|${ctx.taskId}|${ctx.stepId}|${hash}`) : undefined;
   let approvalId: string | null = null;
 
-  if (requiresApproval(tool.riskLevel, settings.autoApproveLevel3)) {
+  if (requiresApproval(tool.riskLevel, settings.autoApproveLevel3 && !policy.alwaysApproveModify)) {
     if (!ctx.stepId || !ctx.taskId) return { status: "blocked", error: "Actions requiring approval can only run inside a task" };
     const decision = await transaction(async (c) => {
       const existing = await queryOne<{ id: string; status: string }>(
@@ -148,7 +160,7 @@ export async function executeTool(
   );
   const started = Date.now();
   try {
-    const output = await withTimeout(tool.handler(input, { ...ctx, idempotencyKey }), tool.timeoutMs ?? 45_000, name);
+    const output = await withTimeout(tool.handler(input, { ...ctx, idempotencyKey, memoryAccess: policy.memoryAccess ?? "own" }), tool.timeoutMs ?? 45_000, name);
     const safeOutput = JSON.parse(redactSecrets(JSON.stringify(output ?? null)));
     await query("UPDATE tool_executions SET status='succeeded', output=$2, duration_ms=$3 WHERE id=$1", [exec!.id, safeOutput, Date.now() - started]);
     if (tool.riskLevel >= 3) {

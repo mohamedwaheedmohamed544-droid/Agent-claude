@@ -24,7 +24,7 @@ export class OverlayRegistry {
       const map = kind === "label" ? this.labels : this.bubbles;
       fn = (el) => {
         const prev = map.get(slug);
-        if (prev) this.last.delete(prev);
+        if (prev) { this.last.delete(prev); this.widths.delete(prev); }
         if (el) map.set(slug, el);
         else map.delete(slug);
       };
@@ -33,13 +33,26 @@ export class OverlayRegistry {
     return fn;
   }
 
+  private widths = new Map<HTMLElement, { text: string; w: number }>();
+
+  /** Rendered label width in CSS px, measured once per text (labels are laid out even while hidden). */
+  labelWidth(el: HTMLElement): number {
+    const text = el.textContent ?? "";
+    const cached = this.widths.get(el);
+    if (cached && cached.text === text) return cached.w;
+    const w = (el.firstElementChild as HTMLElement | null)?.offsetWidth || text.length * 7 + 40;
+    this.widths.set(el, { text, w });
+    return w;
+  }
+
   /** Writes a screen position (CSS px) — skipped when unchanged to avoid style churn. */
-  place(el: HTMLElement, x: number, y: number, z: number, visible: boolean) {
-    const key = visible ? `${x.toFixed(1)}|${y.toFixed(1)}|${z}` : "hidden";
+  place(el: HTMLElement, x: number, y: number, z: number, visible: boolean, compact = false) {
+    const key = visible ? `${x.toFixed(1)}|${y.toFixed(1)}|${z}|${compact ? 1 : 0}` : "hidden";
     if (this.last.get(el) === key) return;
     this.last.set(el, key);
     if (!visible) { el.style.visibility = "hidden"; return; }
     el.style.visibility = "visible";
+    el.dataset.compact = compact ? "1" : "0";
     el.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
     el.style.zIndex = String(z);
   }
@@ -83,7 +96,7 @@ function AgentLabel({ profile, status, selected, dimmed, speaking, locale, bind,
   const name = locale === "en" ? `${profile.nameAr} · ${profile.nameEn}` : profile.nameAr;
   const statusText = STATUS_TEXT[status][locale];
   return (
-    <div ref={bind} className="absolute left-0 top-0" style={{ visibility: "hidden" }}>
+    <div ref={bind} className="group absolute left-0 top-0" style={{ visibility: "hidden" }}>
       <button
         type="button"
         onClick={() => { if (!dimmed) onSelect(profile.slug); }}
@@ -94,6 +107,8 @@ function AgentLabel({ profile, status, selected, dimmed, speaking, locale, bind,
         data-agent-label={profile.slug}
         className={[
           "pointer-events-auto absolute left-0 top-0 flex -translate-x-1/2 -translate-y-1/2 select-none items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-1 text-[12px] font-semibold shadow-md backdrop-blur transition-[opacity,scale,box-shadow,background-color] duration-200",
+          // Crowded labels collapse to a status-dot chip (still focusable and named for assistive tech).
+          "group-data-[compact=1]:gap-0 group-data-[compact=1]:p-1",
           "outline-none focus-visible:ring-2 focus-visible:ring-offset-1",
           selected ? "scale-110 bg-white text-slate-900" : "bg-white/85 text-slate-800 hover:bg-white",
           dimmed ? "cursor-default opacity-40" : "cursor-pointer",
@@ -109,10 +124,10 @@ function AgentLabel({ profile, status, selected, dimmed, speaking, locale, bind,
           className={`size-2 shrink-0 rounded-full ${status === "working" || status === "meeting" ? "animate-soft-pulse" : ""}`}
           style={{ background: status === "working" ? profile.color : STATUS_COLORS[status] }}
         />
-        <span dir="auto">{name}</span>
-        {status === "error" && <span aria-hidden className="grid size-3.5 place-items-center rounded-full bg-red-500 text-[9px] font-bold text-white">!</span>}
+        <span dir="auto" className="group-data-[compact=1]:hidden">{name}</span>
+        {status === "error" && <span aria-hidden className="grid size-3.5 group-data-[compact=1]:hidden place-items-center rounded-full bg-red-500 text-[9px] font-bold text-white">!</span>}
         {speaking && (
-          <span aria-hidden className="flex h-3 items-end gap-[2px]">
+          <span aria-hidden className="flex h-3 items-end gap-[2px] group-data-[compact=1]:hidden">
             {[0, 1, 2].map((i) => (
               <span key={i} className="w-[3px] animate-soft-pulse rounded-full" style={{ height: `${6 + i * 3}px`, background: profile.color, animationDelay: `${i * 0.18}s` }} />
             ))}
@@ -123,10 +138,9 @@ function AgentLabel({ profile, status, selected, dimmed, speaking, locale, bind,
   );
 }
 
-export function AgentOverlay({ sim, registry, profiles, statusBy, selectedAgent, dimmed, locale, onSelectAgent }: {
+export function AgentOverlay({ sim, registry, statusBy, selectedAgent, dimmed, locale, onSelectAgent }: {
   sim: OfficeSim;
   registry: OverlayRegistry;
-  profiles: AgentProfile[];
   statusBy: Map<string, AgentStatus>;
   selectedAgent: string | null;
   dimmed: Set<string>;
@@ -135,24 +149,22 @@ export function AgentOverlay({ sim, registry, profiles, statusBy, selectedAgent,
 }) {
   const [, bump] = useReducer((x: number) => x + 1, 0);
   useEffect(() => sim.subscribe(bump), [sim]);
+  const roster = sim.list.filter((a) => !a.removed);
   return (
     <div className="pointer-events-none absolute inset-0 overflow-hidden" style={{ zIndex: 1 }}>
-      {profiles.map((p) => {
-        const a = sim.agents.get(p.slug);
-        return (
-          <SpeechBubble key={`b-${p.slug}`} bubble={a?.bubble ? { id: a.bubble.id, text: a.bubble.text } : null} accent={p.color} bind={registry.bind("bubble", p.slug)} />
-        );
-      })}
-      {profiles.map((p) => (
+      {roster.map((a) => (
+        <SpeechBubble key={`b-${a.slug}`} bubble={a.bubble ? { id: a.bubble.id, text: a.bubble.text } : null} accent={a.profile.color} bind={registry.bind("bubble", a.slug)} />
+      ))}
+      {roster.filter((a) => !a.leaving).map((a) => (
         <AgentLabel
-          key={`l-${p.slug}`}
-          profile={p}
-          status={statusBy.get(p.slug) ?? "idle"}
-          selected={selectedAgent === p.slug}
-          dimmed={dimmed.has(p.slug)}
-          speaking={sim.isSpeaking(p.slug)}
+          key={`l-${a.slug}`}
+          profile={a.profile}
+          status={statusBy.get(a.slug) ?? "idle"}
+          selected={selectedAgent === a.slug}
+          dimmed={dimmed.has(a.slug)}
+          speaking={sim.isSpeaking(a.slug)}
           locale={locale}
-          bind={registry.bind("label", p.slug)}
+          bind={registry.bind("label", a.slug)}
           onSelect={onSelectAgent}
         />
       ))}

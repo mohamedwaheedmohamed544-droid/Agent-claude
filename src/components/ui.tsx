@@ -234,6 +234,9 @@ export function ErrorState({ error, onRetry }: { error: Error; onRetry?: () => v
 
 // ───────────── Dialog ─────────────
 
+/** Open dialogs, innermost last — only the innermost closes on Escape. */
+const DIALOG_STACK: symbol[] = [];
+
 export function Dialog({ open, onClose, title, description, children, footer, size = "md" }: {
   open: boolean; onClose: () => void; title: React.ReactNode; description?: React.ReactNode; children?: React.ReactNode; footer?: React.ReactNode; size?: "sm" | "md" | "lg" | "xl";
 }) {
@@ -241,10 +244,16 @@ export function Dialog({ open, onClose, title, description, children, footer, si
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const token = Symbol("dialog");
+    DIALOG_STACK.push(token);
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && DIALOG_STACK[DIALOG_STACK.length - 1] === token) onClose(); };
     document.addEventListener("keydown", onKey);
     ref.current?.focus();
-    return () => document.removeEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      const i = DIALOG_STACK.lastIndexOf(token);
+      if (i >= 0) DIALOG_STACK.splice(i, 1);
+    };
   }, [open, onClose]);
   if (!open) return null;
   const w = { sm: "max-w-sm", md: "max-w-lg", lg: "max-w-2xl", xl: "max-w-4xl" }[size];

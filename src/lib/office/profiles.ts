@@ -1,10 +1,13 @@
 import type { AgentProfile } from "./types";
 
+/** Seed data for the starter workforce (see src/lib/agents/catalog.ts). Not used to decide which agents exist. */
+export type SeedProfile = Omit<AgentProfile, "workstationId" | "defaultAnimation" | "isOrchestrator">;
+
 /**
  * The Nexus workforce. Slugs match the orchestration backend (agent_slug); "orchestrator" is راشد.
  * Characters are stylized adult professionals in contemporary Gulf business attire.
  */
-export const AGENT_PROFILES: AgentProfile[] = [
+export const AGENT_PROFILES: SeedProfile[] = [
   {
     slug: "orchestrator", nameAr: "راشد", nameEn: "Rashed", titleAr: "المنسّق الرئيسي", titleEn: "Chief Orchestrator",
     color: "#4f46e5", deskZone: "executive",
@@ -47,9 +50,3 @@ export const AGENT_PROFILES: AgentProfile[] = [
   },
 ];
 
-export const PROFILE_BY_SLUG = new Map(AGENT_PROFILES.map((p) => [p.slug, p]));
-export const OFFICE_AGENT_SLUGS = AGENT_PROFILES.map((p) => p.slug);
-
-export function deskZoneOf(slug: string) {
-  return PROFILE_BY_SLUG.get(slug)?.deskZone ?? "lounge";
-}

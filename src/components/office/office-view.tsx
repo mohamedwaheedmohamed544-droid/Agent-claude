@@ -2,17 +2,18 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Building2, ChevronDown, LayoutGrid, ListChecks, Users, Volume2, VolumeX } from "lucide-react";
 import { useApi, timeAgo } from "@/lib/client/hooks";
 import { useApp } from "@/components/providers";
 import { Alert, Badge, ErrorState, Select, Spinner, StatusBadge, Tabs, cx } from "@/components/ui";
 import type { AgentStatus, OfficeZone } from "@/lib/office/types";
-import { PROFILE_BY_SLUG } from "@/lib/office/profiles";
 import { useOffice } from "./use-office";
 import { AgentPanel, MeetingDialog } from "./agent-panel";
 import { ActivityFeed, MeetingPanel } from "./meeting-panel";
-import { STATUS_DOT, STATUS_TONE, ZONES, displayTitle, speak } from "./office-utils";
+import { STATUS_DOT, STATUS_TONE, displayTitle, speak } from "./office-utils";
+import { OfficeDirectoryProvider, useOfficeDirectory, zoneName } from "./office-directory";
 
 const OfficeScene = dynamic(() => import("./scene/office-scene"), {
   ssr: false,
@@ -37,7 +38,7 @@ function webglAvailable(): boolean {
 }
 
 const matchesFilter = (status: AgentStatus, f: Filter) =>
-  f === "all" ? true : f === "active" ? ["working", "waiting", "meeting"].includes(status) : f === "idle" ? status === "idle" || status === "paused" : f === "meeting" ? status === "meeting" : status === "error";
+  f === "all" ? true : f === "active" ? ["working", "thinking", "collaborating", "waiting", "meeting"].includes(status) : f === "idle" ? status === "idle" || status === "paused" : f === "meeting" ? status === "meeting" : status === "error";
 
 export function OfficeView() {
   const { t, locale, can } = useApp();
@@ -45,7 +46,8 @@ export function OfficeView() {
   const [view, setView] = useState<View>("office");
   const [filter, setFilter] = useState<Filter>("all");
   const [zone, setZone] = useState<OfficeZone>("executive");
-  const [selected, setSelected] = useState<string | null>(null);
+  const params = useSearchParams();
+  const [selected, setSelected] = useState<string | null>(() => params.get("agent"));
   const [meetingId, setMeetingId] = useState<string | null>(null);
   const [cameraMode, setCameraMode] = useState<"orbit" | "follow">("orbit");
   const [quality, setQuality] = useState<"auto" | "high" | "low">("auto");
@@ -56,6 +58,9 @@ export function OfficeView() {
   const [liveVersion, setLiveVersion] = useState(0);
   const voiceRef = useRef(voice);
   voiceRef.current = voice;
+  const dirSlugsRef = useRef<string[]>([]);
+  dirSlugsRef.current = (state?.directory ?? []).map((d) => d.slug);
+  const [floor, setFloor] = useState<number | "all">(0);
 
   useEffect(() => {
     const ok = webglAvailable();
@@ -73,7 +78,7 @@ export function OfficeView() {
     if (voiceRef.current) {
       for (const e of events) {
         if (e.type === "meeting_message" && typeof e.payload.content === "string") {
-          speak(e.payload.content, Math.max(0, [...PROFILE_BY_SLUG.keys()].indexOf(e.agent)));
+          speak(e.payload.content, Math.max(0, dirSlugsRef.current.indexOf(e.agent)));
         }
       }
     }
@@ -104,6 +109,7 @@ export function OfficeView() {
   const panelOpen = Boolean(selected || meetingId);
 
   return (
+    <OfficeDirectoryProvider directory={state.directory} layout={state.layout}>
     <div className="flex h-full flex-col">
       {/* Header + dashboard */}
       <div className="border-b border-border bg-bg px-4 pb-3 pt-4 sm:px-6">
@@ -118,8 +124,13 @@ export function OfficeView() {
           <Badge tone={connected ? "success" : "warning"} className="ms-auto sm:ms-0">
             <span className={cx("size-1.5 rounded-full bg-current", connected && "animate-soft-pulse")} />{connected ? t("office.live") : t("office.reconnecting")}
           </Badge>
+          {can("admin") && (
+            <Link href="/agents?tab=office" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-[12.5px] font-medium text-fg-2 hover:bg-surface-2 sm:ms-auto">
+              {t("office.settingsLink")}
+            </Link>
+          )}
           {can("member") && (
-            <button onClick={() => setMeetingDialog({ open: true, initial: null })} className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white hover:bg-accent-hover sm:ms-auto">
+            <button onClick={() => setMeetingDialog({ open: true, initial: null })} className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white hover:bg-accent-hover">
               <Users className="size-3.5" />{t("office.meeting.title")}
             </button>
           )}
@@ -151,7 +162,14 @@ export function OfficeView() {
             <div className="flex flex-wrap items-center gap-2 sm:ms-auto">
               {view === "departments" && (
                 <Select value={zone} onChange={(e) => setZone(e.target.value as OfficeZone)} className="h-8 text-[12.5px]" style={{ width: "auto" }} aria-label={t("office.view.departments")}>
-                  {ZONES.map((z) => <option key={z} value={z}>{t(`office.zone.${z}`)}</option>)}
+                  {[...state.layout.departments.map((d) => d.key), ...state.layout.meetingRooms.map((r) => r.key), ...state.layout.lounges.map((l) => l.key)]
+                    .map((z) => <option key={z} value={z}>{zoneName(state.layout, z, locale, t)}</option>)}
+                </Select>
+              )}
+              {state.layout.floors > 1 && (
+                <Select value={String(floor)} onChange={(e) => setFloor(e.target.value === "all" ? "all" : Number(e.target.value))} className="h-8 text-[12.5px]" style={{ width: "auto" }} aria-label={t("office.floor")}>
+                  {Array.from({ length: state.layout.floors }, (_, f) => <option key={f} value={f}>{t("office.floorN", { n: f + 1 })}</option>)}
+                  <option value="all">{t("office.allFloors")}</option>
                 </Select>
               )}
               <Select value={cameraMode} onChange={(e) => setCameraMode(e.target.value as "orbit" | "follow")} className="h-8 text-[12.5px]" style={{ width: "auto" }} aria-label="camera">
@@ -181,6 +199,7 @@ export function OfficeView() {
                 selectedAgent={selected} onSelectAgent={selectAgent}
                 cameraMode={cameraMode === "follow" && selected ? "follow" : "orbit"}
                 focusZone={view === "departments" ? zone : null} dimmedAgents={dimmed} quality={quality} locale={locale}
+                layout={state.layout} floor={floor} onFloorChange={(f) => setFloor(f)}
               />
               {liveMeeting && !meetingId && (
                 <button onClick={() => openMeeting(liveMeeting.id)} className="absolute start-3 top-3 flex max-w-[70%] items-center gap-2 rounded-xl border border-border bg-surface/95 px-3 py-2 text-start text-[12.5px] shadow-pop backdrop-blur">
@@ -217,8 +236,9 @@ export function OfficeView() {
           </div>
         )}
       </div>
-      <MeetingDialog open={meetingDialog.open} initial={meetingDialog.initial} profiles={state.profiles} onClose={() => setMeetingDialog({ open: false, initial: null })} />
+      <MeetingDialog open={meetingDialog.open} initial={meetingDialog.initial} profiles={state.directory} onClose={() => setMeetingDialog({ open: false, initial: null })} />
     </div>
+    </OfficeDirectoryProvider>
   );
 }
 
@@ -226,6 +246,7 @@ function AgentList({ filter, onSelect, presenceBy, profiles }: {
   filter: Filter; onSelect: (s: string) => void; presenceBy: Map<string, import("@/lib/office/types").AgentPresence>; profiles: import("@/lib/office/types").AgentProfile[];
 }) {
   const { t, locale } = useApp();
+  const { layout } = useOfficeDirectory();
   const list = profiles.filter((p) => matchesFilter(presenceBy.get(p.slug)?.status ?? "idle", filter));
   return (
     <div className="grid gap-3 overflow-y-auto p-4 sm:grid-cols-2 sm:p-6 xl:grid-cols-4" data-testid="office-agent-list">
@@ -243,7 +264,7 @@ function AgentList({ filter, onSelect, presenceBy, profiles }: {
               {pr && <Badge tone={STATUS_TONE[pr.status]}><span className="size-1.5 rounded-full" style={{ background: STATUS_DOT[pr.status] }} />{t(`office.status.${pr.status}`)}</Badge>}
             </div>
             <dl className="mt-3 space-y-1 text-[12px]">
-              <div className="flex gap-2"><dt className="text-fg-3">{t("office.agentsList.location")}</dt><dd className="text-fg-2">{pr ? t(`office.zone.${pr.zone}`) : "—"}</dd></div>
+              <div className="flex gap-2"><dt className="text-fg-3">{t("office.agentsList.location")}</dt><dd className="text-fg-2">{pr ? zoneName(layout, pr.zone, locale, t) : "—"}</dd></div>
               <div className="flex gap-2"><dt className="shrink-0 text-fg-3">{t("office.agentsList.activity")}</dt><dd className="truncate text-fg-2" dir="auto">{pr?.activity ?? "—"}</dd></div>
             </dl>
           </button>
@@ -255,6 +276,7 @@ function AgentList({ filter, onSelect, presenceBy, profiles }: {
 
 function TaskOverview() {
   const { t } = useApp();
+  const dir = useOfficeDirectory();
   const { data, loading } = useApi<{ tasks: Array<{ id: string; title: string; status: string; agents: string[] | null; stepCount: number; stepsDone: number; updatedAt: string }> }>("/api/tasks?limit=30", { intervalMs: 10_000 });
   if (loading && !data) return <div className="p-6"><Spinner /></div>;
   if (!data?.tasks.length) return <p className="p-6 text-sm text-fg-3">{t("office.tasks.empty")}</p>;
@@ -266,7 +288,7 @@ function TaskOverview() {
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium text-fg" dir="auto">{task.title}</p>
               <p className="mt-0.5 flex flex-wrap gap-1 text-[11.5px] text-fg-3">
-                {(task.agents ?? []).map((a) => <span key={a} style={{ color: PROFILE_BY_SLUG.get(a)?.color }}>{PROFILE_BY_SLUG.get(a)?.nameAr ?? a}</span>)}
+                {(task.agents ?? []).map((a) => <span key={a} style={{ color: dir.get(a)?.color }}>{dir.get(a)?.nameAr ?? a}</span>)}
                 <span>· {task.stepsDone}/{task.stepCount}</span><span>· {timeAgo(task.updatedAt, t)}</span>
               </p>
             </div>
@@ -280,6 +302,7 @@ function TaskOverview() {
 
 function MeetingsList({ meetings, onOpen }: { meetings: import("@/lib/office/types").MeetingSummary[]; onOpen: (id: string) => void }) {
   const { t } = useApp();
+  const dir = useOfficeDirectory();
   return (
     <div>
       <h2 className="mb-2 text-[13px] font-semibold text-fg">{t("office.meeting.recent")}</h2>
@@ -289,7 +312,7 @@ function MeetingsList({ meetings, onOpen }: { meetings: import("@/lib/office/typ
             <li key={m.id}>
               <button onClick={() => onOpen(m.id)} className="flex w-full items-center gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-start text-[12.5px] hover:border-border-strong" data-meeting={m.id}>
                 <span className="min-w-0 flex-1 truncate text-fg-2" dir="auto">{m.objective}</span>
-                <span className="flex -space-x-1 rtl:space-x-reverse">{m.participants.map((p) => <span key={p} className="size-2.5 rounded-full ring-2 ring-surface" style={{ background: PROFILE_BY_SLUG.get(p)?.color }} />)}</span>
+                <span className="flex -space-x-1 rtl:space-x-reverse">{m.participants.map((p) => <span key={p} className="size-2.5 rounded-full ring-2 ring-surface" style={{ background: dir.get(p)?.color }} />)}</span>
                 <StatusBadge status={m.status === "in_progress" ? "running" : m.status} />
               </button>
             </li>

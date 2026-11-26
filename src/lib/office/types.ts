@@ -3,27 +3,66 @@
  * and the 3D office UI. Every value here is derived from real orchestration state.
  */
 
-/** Logical places in the office. Positions live in the 3D layout; the backend only uses names. */
-export type OfficeZone =
-  | "executive"      // راشد's office
-  | "research"       // باحث
-  | "bizdev"         // رائد
-  | "documents"      // بيان
-  | "writing"        // قلم (content studio)
-  | "analytics"      // بصيرة
-  | "operations"     // تميم
-  | "marketing"      // أثر
-  | "meeting_room"
-  | "lounge";
+/**
+ * Logical place in the office: a department key (e.g. "research"), a meeting room key
+ * (e.g. "meeting_room", "meeting_room_2") or a lounge key ("lounge", "lounge_2").
+ * Zones are data-driven (departments are created by admins); positions come from the layout engine.
+ */
+export type OfficeZone = string;
+
+export type OfficeLayoutMode = "compact" | "standard" | "expanded" | "large" | "multi_floor" | "custom";
+
+export interface LayoutWorkstation {
+  id: string;
+  index: number;              // stable order within its department
+  agentSlug: string | null;   // occupant (null = free desk)
+}
+
+export interface LayoutDepartment {
+  key: string;
+  name: string;
+  nameAr: string;
+  color: string;
+  kind: "executive" | "department";
+  floor: number;              // 0-based
+  managerSlug: string | null;
+  meetingRoomKey: string | null;
+  workstations: LayoutWorkstation[];
+}
+
+export interface LayoutMeetingRoom { key: string; name: string; nameAr: string; floor: number; seats: number }
+export interface LayoutLounge { key: string; floor: number }
+
+/**
+ * Logical office plan computed on the server from departments, workstations, visible agents and
+ * office settings. The 3D layout engine turns it into geometry deterministically, so the same spec
+ * always yields the same positions (stable identities across incremental updates).
+ */
+export interface OfficeLayoutSpec {
+  mode: OfficeLayoutMode;
+  auto: boolean;
+  floors: number;
+  departments: LayoutDepartment[];
+  meetingRooms: LayoutMeetingRoom[];
+  lounges: LayoutLounge[];
+  characterScale: number;     // 0.8–1.25
+  showLabels: boolean;
+  ambientLounge: boolean;     // idle agents may stroll to the lounge after 60 s
+  camera: { defaultView: "overview" | "executive"; autoRotate: boolean };
+  /** Monotonic hash of the spec; changes whenever the plan changes. */
+  revision: string;
+}
 
 /** Persistent operational status of an agent (changes only on real backend events). */
 export type AgentStatus =
   | "idle"
   | "working"     // a task step is running for this agent
-  | "waiting"     // blocked on another agent's output or on a user approval
+  | "thinking"    // orchestrator planning a newly received task
+  | "collaborating" // blocked on another agent's output (waitingFor = that agent)
+  | "waiting"     // waiting for a user approval
   | "meeting"     // participating in an in-progress meeting
   | "error"       // its latest step failed recently
-  | "paused";     // disabled by an admin (agents.active = false)
+  | "paused";     // deactivated by an admin (lifecycle inactive) — not shown in the active office
 
 /** Animation the character should play. Derived on the client from status + latest event. */
 export type CharacterAnimation =
@@ -45,7 +84,10 @@ export type ActivityEventType =
   | "step_failed"
   | "task_completed"
   | "task_failed"
-  | "idle";
+  | "idle"
+  // Workforce changes (payload.slug): the office reloads profiles + layout incrementally.
+  | "agent_created" | "agent_updated" | "agent_activated" | "agent_deactivated" | "agent_archived"
+  | "agent_restored" | "agent_deleted" | "agent_moved" | "office_layout_changed";
 
 export interface ActivityEvent {
   id: string;               // bigserial as string, monotonically increasing per workspace stream
@@ -81,15 +123,19 @@ export interface AgentProfile {
   titleAr: string;
   titleEn: string;
   color: string;            // primary accent (hex)
-  deskZone: OfficeZone;
+  deskZone: OfficeZone;     // department key
+  workstationId: string | null;
   appearance: CharacterAppearance;
+  defaultAnimation: "idle" | "working" | "reading" | "thinking";
+  isOrchestrator: boolean;
 }
 
 /** Stylized adult professional character description (procedurally modelled). */
 export interface CharacterAppearance {
-  gender: "male" | "female";
+  /** "neutral" = gender-neutral stylized professional (no gendered attire). */
+  gender: "male" | "female" | "neutral";
   skin: string;
-  outfit: "thobe" | "suit" | "abaya" | "blazer" | "shirt";
+  outfit: "thobe" | "suit" | "abaya" | "blazer" | "shirt" | "turtleneck" | "cardigan";
   outfitColor: string;
   headwear: "ghutra" | "shemagh" | "hijab" | "none";
   headwearColor: string;
@@ -152,7 +198,10 @@ export interface OfficeDashboard {
 }
 
 export interface OfficeState {
-  profiles: AgentProfile[];
+  profiles: AgentProfile[];     // active, visible agents only (the office workforce)
+  layout: OfficeLayoutSpec;
+  /** Every non-deleted agent (incl. inactive/archived) for resolving names in history and feeds. */
+  directory: Array<{ slug: string; nameAr: string; nameEn: string; titleEn: string; titleAr: string; color: string; lifecycle: string; isOrchestrator: boolean }>;
   presence: AgentPresence[];
   dashboard: OfficeDashboard;
   meetings: MeetingSummary[];   // in-progress first, then recent

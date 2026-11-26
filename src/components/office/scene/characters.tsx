@@ -1,9 +1,10 @@
 "use client";
 
-import { memo, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useReducer, useRef } from "react";
 import * as THREE from "three";
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
 import type { AgentPresence, AgentProfile, AgentStatus } from "@/lib/office/types";
+import { floorVisible, type Vec2 } from "./plan";
 import { useScene } from "./context";
 import { buildCharacter, HIP_HEIGHT, type CharacterRig } from "./character-model";
 import { applyPose } from "./poses";
@@ -41,7 +42,9 @@ interface CharacterProps {
 
 const Character = memo(function Character({ profile, status, selected, dimmed, geo, register, onSelect }: CharacterProps) {
   const { res, tier } = useScene();
-  const rig = useMemo(() => buildCharacter(profile, res), [profile, res]);
+  // Rebuild the mesh only when the look changes (not on every roster refresh).
+  const lookKey = `${JSON.stringify(profile.appearance)}|${profile.color}`;
+  const rig = useMemo(() => buildCharacter(profile, res), [lookKey, res]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => rig.dispose(), [rig]);
 
   const group = useRef<THREE.Group>(null);
@@ -93,16 +96,25 @@ const Character = memo(function Character({ profile, status, selected, dimmed, g
 });
 
 export interface CharactersProps {
-  profiles: AgentProfile[];
   presence: AgentPresence[];
   selectedAgent: string | null;
   dimmedAgents: string[];
+  view: number | "all";
+  offsets: Vec2[];
+  showLabels: boolean;
+  characterScale: number;
   onSelectAgent: (slug: string | null) => void;
 }
 
-export function Characters({ profiles, presence, selectedAgent, dimmedAgents, onSelectAgent }: CharactersProps) {
+export function Characters({ presence, selectedAgent, dimmedAgents, view, offsets, showLabels, characterScale, onSelectAgent }: CharactersProps) {
   const { sim, overlay } = useScene();
   const registry = useRef(new Map<string, Registered>());
+  // Re-render only when characters join or finally leave.
+  const [, bump] = useReducer((x: number) => x + 1, 0);
+  const rosterSeen = useRef(sim.rosterVersion);
+  useEffect(() => sim.subscribe(() => {
+    if (sim.rosterVersion !== rosterSeen.current) { rosterSeen.current = sim.rosterVersion; bump(); }
+  }), [sim]);
 
   const geo = useMemo<SharedGeo>(() => ({
     ring: new THREE.RingGeometry(0.42, 0.5, 40),
@@ -125,21 +137,43 @@ export function Characters({ profiles, presence, selectedAgent, dimmedAgents, on
   const frames = useRef(0);
   const hookTimer = useRef(0);
   const v = useMemo(() => new THREE.Vector3(), []);
+  const cfg = useRef({ view, offsets, showLabels, selectedAgent, characterScale });
+  cfg.current = { view, offsets, showLabels, selectedAgent, characterScale };
+
+  const candidates = useRef<Array<{ el: HTMLElement; x: number; y: number; depth: number; w: number; pinned: boolean }>>([]);
+  const placedBoxes = useRef<number[]>([]);
 
   useFrame(({ camera, size }, delta) => {
     sim.update(delta);
+    const cands = candidates.current;
+    cands.length = 0;
     const t = sim.time;
+    const c = cfg.current;
+    const cs = Math.min(1.25, Math.max(0.8, c.characterScale || 1));
     for (const a of sim.list) {
       const r = registry.current.get(a.slug);
+      const label = overlay.labels.get(a.slug);
+      const bubble = overlay.bubbles.get(a.slug);
+      const shown = a.placed && floorVisible(a.floor, c.view) && a.fade > 0.001;
       if (!r) continue;
-      r.group.position.set(a.x, 0, a.z);
+      r.group.visible = shown;
+      if (!shown) {
+        if (label) overlay.place(label, 0, 0, 0, false);
+        if (bubble) overlay.place(bubble, 0, 0, 0, false);
+        continue;
+      }
+      const o = c.offsets[a.floor] ?? { x: 0, z: 0 };
+      const ox = o.x, oz = o.z;
+      r.group.position.set(a.x + ox, 0, a.z + oz);
       r.group.rotation.y = a.yaw;
+      r.rig.root.scale.setScalar(cs);
+      r.rig.setOpacity(a.fade);
       applyPose(r.rig, a.out, a.gait);
       const drop = (HIP_HEIGHT * a.scale - ((a.seat?.height ?? 0.47) + 0.065)) * a.sit;
-      const h = r.height - drop;
+      const h = r.height * cs - drop;
       r.proxy.scale.y = h;
       r.proxy.position.y = h / 2;
-      r.shadow.scale.setScalar(1 + a.sit * 0.35);
+      r.shadow.scale.setScalar((1 + a.sit * 0.35) * a.fade);
       if (r.ring.visible) r.ring.scale.setScalar(1 + 0.06 * Math.sin(t * 3));
       if (r.alert.visible) {
         const k = 0.5 + 0.5 * Math.sin(t * 5);
@@ -148,20 +182,35 @@ export function Characters({ profiles, presence, selectedAgent, dimmedAgents, on
       }
 
       // Screen-space anchors for the HTML label and speech bubble.
-      const label = overlay.labels.get(a.slug);
       if (label) {
-        v.set(a.x, h + 0.3, a.z).project(camera);
-        const on = v.z < 1; // off-screen labels are clipped by the overlay; only hide when behind the camera
-        overlay.place(label, (v.x * 0.5 + 0.5) * size.width, (0.5 - v.y * 0.5) * size.height, 100 + Math.round((1 - v.z) * 5000), on);
+        v.set(a.x + ox, h + 0.3, a.z + oz).project(camera);
+        const pinned = c.selectedAgent === a.slug;
+        const on = v.z < 1 && !a.leaving && a.fade > 0.5 && (c.showLabels || pinned);
+        if (on) cands.push({ el: label, x: (v.x * 0.5 + 0.5) * size.width, y: (0.5 - v.y * 0.5) * size.height, depth: v.z, w: overlay.labelWidth(label), pinned });
+        else overlay.place(label, 0, 0, 0, false);
       }
-      const bubble = overlay.bubbles.get(a.slug);
       if (bubble) {
-        v.set(a.x, h + 0.52, a.z).project(camera);
+        v.set(a.x + ox, h + 0.52, a.z + oz).project(camera);
         const on = v.z < 1;
         const margin = Math.min(138, size.width * 0.31 + 8); // keep the whole bubble on screen
         const bx = THREE.MathUtils.clamp((v.x * 0.5 + 0.5) * size.width, margin, Math.max(margin, size.width - margin));
         overlay.place(bubble, bx, (0.5 - v.y * 0.5) * size.height, 20000 + Math.round((1 - v.z) * 5000), on);
       }
+    }
+
+    // Declutter: selected first, then nearest; a label that would overlap an already placed one shrinks to a dot.
+    cands.sort((p, q) => (p.pinned === q.pinned ? p.depth - q.depth : p.pinned ? -1 : 1));
+    const boxes = placedBoxes.current;
+    boxes.length = 0;
+    for (const cd of cands) {
+      const x0 = cd.x - cd.w / 2 + 3, x1 = cd.x + cd.w / 2 - 3, y0 = cd.y - 10, y1 = cd.y + 10;
+      let free = true;
+      for (let i = 0; i < boxes.length && free; i += 4) {
+        if (x0 < boxes[i + 2] && x1 > boxes[i] && y0 < boxes[i + 3] && y1 > boxes[i + 1]) free = false;
+      }
+      const full = free || cd.pinned;
+      if (full) boxes.push(x0, y0, x1, y1);
+      overlay.place(cd.el, cd.x, cd.y, (full ? 1000 : 100) + Math.round((1 - cd.depth) * 5000), true, !full);
     }
 
     // End-to-end test hook (throttled).
@@ -178,13 +227,13 @@ export function Characters({ profiles, presence, selectedAgent, dimmedAgents, on
 
   return (
     <group>
-      {profiles.map((p) => (
+      {sim.list.map((a) => (
         <Character
-          key={p.slug}
-          profile={p}
-          status={statusBy.get(p.slug) ?? "idle"}
-          selected={selectedAgent === p.slug}
-          dimmed={dimmed.has(p.slug)}
+          key={a.slug}
+          profile={a.profile}
+          status={statusBy.get(a.slug) ?? "idle"}
+          selected={selectedAgent === a.slug}
+          dimmed={dimmed.has(a.slug)}
           geo={geo}
           register={register}
           onSelect={onSelectAgent}

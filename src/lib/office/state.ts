@@ -1,13 +1,17 @@
 import { query, queryOne } from "../db";
-import { listAgents } from "../agents/store";
-import { AGENT_PROFILES, PROFILE_BY_SLUG } from "./profiles";
-import { eventsAfter, getPresence, recentMessages, syncAgentProfiles } from "./events";
+import { ensureWorkspaceSeeded } from "../agents/registry";
+import { getAgentRuntime } from "../agents/runtime";
+import { eventsAfter, getPresence, recentMessages } from "./events";
 import { listMeetings } from "./meetings";
+import { computeLayoutSpec, getDirectory, toProfiles } from "./directory";
 import type { OfficeDashboard, OfficeState } from "./types";
 
 export async function getOfficeState(workspaceId: string): Promise<OfficeState> {
-  await syncAgentProfiles();
-  const [presence, meetings, events, messages, counts] = await Promise.all([
+  await ensureWorkspaceSeeded(workspaceId);
+  const dir = await getDirectory(workspaceId);
+  const profiles = toProfiles(dir);
+  const [layout, presence, meetings, events, messages, counts] = await Promise.all([
+    computeLayoutSpec(workspaceId, profiles),
     getPresence(workspaceId),
     listMeetings(workspaceId, { limit: 20 }),
     eventsAfter(workspaceId, null, 100),
@@ -18,26 +22,32 @@ export async function getOfficeState(workspaceId: string): Promise<OfficeState> 
               (SELECT count(*)::int FROM approvals WHERE workspace_id=$1 AND status='pending') AS approvals`, [workspaceId],
     ),
   ]);
+  const inOffice = new Set(profiles.map((p) => p.slug));
+  const live = presence.filter((p) => inOffice.has(p.agent));
   const dashboard: OfficeDashboard = {
-    totalAgents: AGENT_PROFILES.length,
-    activeAgents: presence.filter((p) => p.status === "working" || p.status === "meeting" || p.status === "waiting").length,
-    idleAgents: presence.filter((p) => p.status === "idle").length,
-    inMeetings: presence.filter((p) => p.status === "meeting").length,
+    totalAgents: profiles.length,
+    activeAgents: live.filter((p) => ["working", "thinking", "collaborating", "meeting", "waiting"].includes(p.status)).length,
+    idleAgents: live.filter((p) => p.status === "idle").length,
+    inMeetings: live.filter((p) => p.status === "meeting").length,
     runningTasks: counts?.running ?? 0,
     completedTasks: counts?.completed ?? 0,
     pendingApprovals: counts?.approvals ?? 0,
     currentMeetings: meetings.filter((m) => m.status === "in_progress").length,
   };
-  return { profiles: AGENT_PROFILES, presence, dashboard, meetings, events, messages, lastEventId: events.at(-1)?.id ?? null };
+  return {
+    profiles, layout, presence, dashboard, meetings, events, messages, lastEventId: events.at(-1)?.id ?? null,
+    directory: dir.map((d) => ({ slug: d.slug, nameAr: d.nameAr, nameEn: d.nameEn, titleEn: d.titleEn, titleAr: d.titleAr, color: d.color, lifecycle: d.lifecycle, isOrchestrator: d.isOrchestrator })),
+  };
 }
 
 export async function getAgentDetail(workspaceId: string, slug: string) {
-  const profile = PROFILE_BY_SLUG.get(slug);
-  if (!profile) return null;
-  const isOrchestrator = slug === "orchestrator";
-  const [presence, agents, events, messages, meetings, tasks, metrics] = await Promise.all([
+  await ensureWorkspaceSeeded(workspaceId);
+  const entry = (await getDirectory(workspaceId)).find((d) => d.slug === slug);
+  if (!entry) return null;
+  const rt = await getAgentRuntime(workspaceId, slug);
+  const isOrchestrator = entry.isOrchestrator;
+  const [presence, events, messages, meetings, tasks, metrics] = await Promise.all([
     getPresence(workspaceId).then((p) => p.find((x) => x.agent === slug) ?? null),
-    isOrchestrator ? Promise.resolve([]) : listAgents(workspaceId),
     query(
       `SELECT id::text, agent_slug AS agent, event_type AS type, task_id AS "taskId", step_id AS "stepId", meeting_id AS "meetingId",
               related_agent AS "relatedAgent", zone, summary, payload, created_at AS "createdAt"
@@ -58,16 +68,10 @@ export async function getAgentDetail(workspaceId: string, slug: string) {
                          avg(EXTRACT(EPOCH FROM (completed_at - started_at))) FILTER (WHERE status='completed')::float AS "avgSeconds"
                     FROM task_steps WHERE workspace_id=$1 AND (agent_slug=$2 OR $2 = ANY(participants))`, [workspaceId, slug]),
   ]);
-  const agent = (agents as Awaited<ReturnType<typeof listAgents>>).find((a) => a.slug === slug);
   return {
-    profile, presence, events: (events as unknown[]).reverse(), messages, meetings, tasks, metrics,
-    config: agent ? { active: agent.active, tier: agent.tier, tools: agent.allowedTools, description: agent.description, descriptionAr: agent.descriptionAr, capabilities: agent.capabilities } : null,
+    profile: { slug, nameAr: entry.nameAr, nameEn: entry.nameEn, titleEn: entry.titleEn, titleAr: entry.titleAr, color: entry.color, deskZone: entry.departmentKey },
+    lifecycle: entry.lifecycle,
+    presence, events: (events as unknown[]).reverse(), messages, meetings, tasks, metrics,
+    config: rt ? { active: rt.assignable, tier: rt.tier, tools: rt.allowedTools, description: rt.description, descriptionAr: rt.descriptionAr, capabilities: rt.capabilities } : null,
   };
-}
-
-export const DEFAULT_OFFICE_SETTINGS = { quality: "auto", voice: { enabled: false } } as const;
-
-export async function getOfficeSettings(workspaceId: string) {
-  const row = await queryOne<{ settings: Record<string, unknown> }>("SELECT settings FROM office_settings WHERE workspace_id=$1", [workspaceId]);
-  return { ...DEFAULT_OFFICE_SETTINGS, ...(row?.settings ?? {}) };
 }

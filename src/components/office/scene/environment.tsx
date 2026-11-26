@@ -3,22 +3,19 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
-import type { AgentStatus, OfficeZone } from "@/lib/office/types";
+import type { AgentStatus } from "@/lib/office/types";
 import { useScene } from "./context";
 import { boxAt, cylAt, local, merge, paint, xform } from "./geometry";
-import { mulberry32 } from "./resources";
 import {
-  ARMCHAIRS, BOOKSHELF, COFFEE_BAR, COFFEE_TABLE, CREDENZA, DEPARTMENT_DISPLAYS, DESKS, DESK_HEIGHT, EXECUTIVE_WALL,
-  EXTRA_CHAIRS, FILING_CABINETS, FLOOR, GLASS_HEIGHT, LOW_WALL_HEIGHT, MEETING_HEAD_SEAT, MEETING_SCREEN, MEETING_SIDE_SEATS,
-  MEETING_TABLE, MOOD_BOARD, PENDANTS, PLANTERS, PLANTS, REVIEW_DESK, ROUND_TABLES, SECONDARY_DESKS, SERVER_RACKS, SOFAS, WALLS, WALL_HEIGHT,
-  WALL_THICKNESS, WINDOWS, WRITING_SHELF, ZONE_RUGS, type BoxSpec, type WallSide,
-} from "./layout";
+  DESK_HEIGHT, GLASS_HEIGHT, LOW_WALL_HEIGHT, PARTITION_HEIGHT, WALL_HEIGHT, WALL_THICKNESS,
+  type BoxSpec, type FloorPlan, type OfficePlan, type Vec2, type WallSide,
+} from "./plan";
 
 const yawQ = (yaw: number) => new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
 const mat4 = (x: number, y: number, z: number, yaw: number, sx = 1, sy = 1, sz = 1) =>
   new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), yawQ(yaw), new THREE.Vector3(sx, sy, sz));
 
-/** One InstancedMesh per part, all sharing the same instance transforms. */
+/** One InstancedMesh per part, all sharing the same instance transforms (count fixed per layout revision). */
 function InstancedParts({ parts, matrices, cast = true, receive = true, colors }: {
   parts: Array<{ geometry: THREE.BufferGeometry; material: THREE.Material; tinted?: boolean }>;
   matrices: THREE.Matrix4[];
@@ -39,11 +36,12 @@ function InstancedParts({ parts, matrices, cast = true, receive = true, colors }
       mesh.computeBoundingSphere();
     });
   }, [matrices, colors, parts]);
+  if (matrices.length === 0) return null;
   return (
     <>
       {parts.map((p, i) => (
         <instancedMesh
-          key={i}
+          key={`${i}:${matrices.length}`}
           ref={(el) => { refs.current[i] = el; }}
           args={[p.geometry, p.material, matrices.length]}
           castShadow={cast && !p.tinted}
@@ -61,69 +59,41 @@ function useDisposable<T extends { dispose(): void }>(factory: () => T): T {
   return value;
 }
 
-function useGeometries<T extends Record<string, THREE.BufferGeometry>>(factory: () => T): T {
+/** Geometries owned by a component instance (re-created on remount, i.e. on layout revision change). */
+function useGeometries<T extends Record<string, THREE.BufferGeometry | null>>(factory: () => T): T {
   const value = useMemo(factory, []); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => () => Object.values(value).forEach((g) => g.dispose()), [value]);
+  useEffect(() => () => Object.values(value).forEach((g) => g?.dispose()), [value]);
   return value;
 }
 
-// ───────────────────────── Shell: floor, walls, glass, windows, rugs ─────────────────────────
+// ───────────────────────── Shell ─────────────────────────
 
-function Floor({ onMiss }: { onMiss: () => void }) {
-  const { res } = useScene();
-  const w = FLOOR.maxX - FLOOR.minX, d = FLOOR.maxZ - FLOOR.minZ;
-  useLayoutEffect(() => { res.floorTex.repeat.set(w / 2.4, d / 2.4); }, [res, w, d]);
-  const onClick = (e: ThreeEvent<MouseEvent>) => {
-    if (e.delta > 6) return; // a drag (orbit), not a click
-    e.stopPropagation();
-    onMiss();
-  };
-  return (
-    <>
-      <mesh rotation-x={-Math.PI / 2} receiveShadow onClick={onClick}>
-        <planeGeometry args={[w, d]} />
-        <primitive object={res.mats.floor} attach="material" />
-      </mesh>
-      <mesh rotation-x={-Math.PI / 2} position-y={-0.03} raycast={() => null}>
-        <planeGeometry args={[220, 220]} />
-        <meshStandardMaterial color="#cfcbc4" roughness={1} />
-      </mesh>
-    </>
-  );
-}
-
-function wallBox(a: { x: number; z: number }, b: { x: number; z: number }, height: number, thickness: number, y0 = 0) {
+function wallBox(a: Vec2, b: Vec2, height: number, thickness: number, y0 = 0) {
   const len = Math.hypot(b.x - a.x, b.z - a.z);
   const yaw = Math.atan2(b.x - a.x, b.z - a.z);
   return boxAt(thickness, height, len + thickness, { x: (a.x + b.x) / 2, y: y0 + height / 2, z: (a.z + b.z) / 2, ry: yaw });
 }
 
-const SIDE_NORMALS: Record<Exclude<WallSide, "south">, { n: [number, number]; p: [number, number] }> = {
-  north: { n: [0, 1], p: [0, FLOOR.minZ] },
-  west: { n: [1, 0], p: [FLOOR.minX, 0] },
-  east: { n: [-1, 0], p: [FLOOR.maxX, 0] },
-};
+const INWARD: Record<Exclude<WallSide, "south">, [number, number]> = { north: [0, 1], west: [1, 0], east: [-1, 0] };
 
 /** Exterior wall that fades out when the camera orbits behind it, so the office stays readable. */
-function FadingWall({ side }: { side: Exclude<WallSide, "south"> }) {
-  const seg = WALLS.find((w) => w.side === side)!;
+function FadingWall({ fp, side, offset }: { fp: FloorPlan; side: Exclude<WallSide, "south">; offset: Vec2 }) {
+  const seg = fp.walls.find((w) => w.side === side)!;
   const geometry = useDisposable(() => {
-    const g = merge([
+    const [nx, nz] = INWARD[side];
+    return merge([
       paint(wallBox(seg.a, seg.b, WALL_HEIGHT, WALL_THICKNESS), "#f1eee8"),
-      // Baseboard on the inner face.
-      paint(wallBox(
-        { x: seg.a.x + SIDE_NORMALS[side].n[0] * 0.11, z: seg.a.z + SIDE_NORMALS[side].n[1] * 0.11 },
-        { x: seg.b.x + SIDE_NORMALS[side].n[0] * 0.11, z: seg.b.z + SIDE_NORMALS[side].n[1] * 0.11 }, 0.1, 0.02), "#7d766c"),
+      paint(wallBox({ x: seg.a.x + nx * 0.11, z: seg.a.z + nz * 0.11 }, { x: seg.b.x + nx * 0.11, z: seg.b.z + nz * 0.11 }, 0.1, 0.02), "#7d766c"),
     ]);
-    return g;
   });
   const material = useDisposable(() => new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9 }));
   const opacity = useRef(1);
   useFrame(({ camera }, dt) => {
-    const { n, p } = SIDE_NORMALS[side];
-    const signed = (camera.position.x - p[0]) * n[0] + (camera.position.z - p[1]) * n[1];
+    const [nx, nz] = INWARD[side];
+    const px = seg.a.x + offset.x, pz = seg.a.z + offset.z;
+    const signed = (camera.position.x - px) * nx + (camera.position.z - pz) * nz;
     const target = signed < -0.5 ? 0.1 : signed < 1.5 ? 0.1 + 0.9 * ((signed + 0.5) / 2) : 1;
-    opacity.current += (target - opacity.current) * (1 - Math.exp(-8 * dt));
+    opacity.current += (target - opacity.current) * (1 - Math.exp(-8 * Math.min(dt, 0.1)));
     const o = opacity.current;
     material.opacity = o;
     material.transparent = o < 0.995;
@@ -132,11 +102,10 @@ function FadingWall({ side }: { side: Exclude<WallSide, "south"> }) {
   return <mesh geometry={geometry} material={material} castShadow receiveShadow raycast={() => null} />;
 }
 
-function Shell() {
+function Shell({ fp, offset }: { fp: FloorPlan; offset: Vec2 }) {
   const { res, tier } = useScene();
   const geo = useGeometries(() => {
-    const glassSegs = WALLS.filter((w) => w.kind === "glass");
-    const panes = glassSegs.map((w) => wallBox(w.a, w.b, GLASS_HEIGHT - 0.1, 0.02, 0.05));
+    const glassSegs = fp.walls.filter((w) => w.kind === "glass");
     const frames: THREE.BufferGeometry[] = [];
     for (const w of glassSegs) {
       frames.push(wallBox(w.a, w.b, 0.06, 0.06, 0), wallBox(w.a, w.b, 0.07, 0.07, GLASS_HEIGHT - 0.04));
@@ -147,51 +116,73 @@ function Shell() {
         frames.push(boxAt(0.05, GLASS_HEIGHT, 0.05, { x: w.a.x + (w.b.x - w.a.x) * t, y: GLASS_HEIGHT / 2, z: w.a.z + (w.b.z - w.a.z) * t }));
       }
     }
-    const south = WALLS.find((w) => w.side === "south")!;
-    const windows = WINDOWS.map((wd) => {
+    const b = fp.bounds;
+    const windows = fp.windows.map((wd) => {
       const width = wd.to - wd.from, mid = (wd.from + wd.to) / 2;
       const g = new THREE.PlaneGeometry(width, 1.9);
       const uv = g.attributes.uv as THREE.BufferAttribute;
       for (let i = 0; i < uv.count; i++) uv.setX(i, uv.getX(i) * (width / 1.6));
-      if (wd.side === "north") return xform(g, { x: mid, y: 1.85, z: FLOOR.minZ + 0.115 });
-      if (wd.side === "west") return xform(g, { x: FLOOR.minX + 0.115, y: 1.85, z: mid, ry: Math.PI / 2 });
-      return xform(g, { x: FLOOR.maxX - 0.115, y: 1.85, z: mid, ry: -Math.PI / 2 });
+      if (wd.side === "north") return xform(g, { x: mid, y: 1.85, z: b.minZ + 0.115 });
+      if (wd.side === "west") return xform(g, { x: b.minX + 0.115, y: 1.85, z: mid, ry: Math.PI / 2 });
+      return xform(g, { x: b.maxX - 0.115, y: 1.85, z: mid, ry: -Math.PI / 2 });
     });
+    const lows = fp.walls.filter((w) => w.kind === "low").map((w) => wallBox(w.a, w.b, LOW_WALL_HEIGHT, WALL_THICKNESS));
+    const partitions = fp.walls.filter((w) => w.kind === "partition").map((w) => paint(wallBox(w.a, w.b, PARTITION_HEIGHT, 0.12), "#ece8e1"));
     return {
-      glass: merge(panes),
-      frames: merge(frames),
-      low: wallBox(south.a, south.b, LOW_WALL_HEIGHT, WALL_THICKNESS),
-      windows: merge(windows),
+      glass: glassSegs.length ? merge(glassSegs.map((w) => wallBox(w.a, w.b, GLASS_HEIGHT - 0.1, 0.02, 0.05))) : null,
+      frames: frames.length ? merge(frames) : null,
+      low: lows.length ? merge(lows) : null,
+      partitions: partitions.length ? merge(partitions) : null,
+      windows: windows.length ? merge(windows) : null,
     };
   });
   return (
     <group>
-      <FadingWall side="north" />
-      <FadingWall side="west" />
-      <FadingWall side="east" />
-      <mesh geometry={geo.low} material={res.mats.lowWall} castShadow receiveShadow raycast={() => null} />
-      <mesh geometry={geo.windows} material={res.mats.window} raycast={() => null} />
-      <mesh geometry={geo.frames} material={res.mats.glassFrame} castShadow raycast={() => null} />
-      <mesh geometry={geo.glass} material={res.glass(tier)} renderOrder={2} raycast={() => null} />
+      <FadingWall fp={fp} side="north" offset={offset} />
+      <FadingWall fp={fp} side="west" offset={offset} />
+      <FadingWall fp={fp} side="east" offset={offset} />
+      {geo.low && <mesh geometry={geo.low} material={res.mats.lowWall} castShadow receiveShadow raycast={() => null} />}
+      {geo.partitions && <mesh geometry={geo.partitions} material={res.mats.decor} castShadow receiveShadow raycast={() => null} />}
+      {geo.windows && <mesh geometry={geo.windows} material={res.mats.window} raycast={() => null} />}
+      {geo.frames && <mesh geometry={geo.frames} material={res.mats.glassFrame} castShadow raycast={() => null} />}
+      {geo.glass && <mesh geometry={geo.glass} material={res.glass(tier)} renderOrder={2} raycast={() => null} />}
     </group>
   );
 }
 
-function Rugs({ zoneColors }: { zoneColors: Partial<Record<OfficeZone, string>> }) {
+function FloorSlab({ fp, onMiss }: { fp: FloorPlan; onMiss: () => void }) {
+  const { res } = useScene();
+  const b = fp.bounds;
+  const geo = useGeometries(() => {
+    const w = b.maxX - b.minX, d = b.maxZ - b.minZ;
+    const g = new THREE.PlaneGeometry(w, d);
+    const uv = g.attributes.uv as THREE.BufferAttribute;
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * (w / 2.4), uv.getY(i) * (d / 2.4));
+    return { slab: xform(g, { x: (b.minX + b.maxX) / 2, z: (b.minZ + b.maxZ) / 2, rx: -Math.PI / 2 }) };
+  });
+  const onClick = (e: ThreeEvent<MouseEvent>) => {
+    if (e.delta > 6) return; // a drag (orbit), not a click
+    e.stopPropagation();
+    onMiss();
+  };
+  return <mesh geometry={geo.slab!} material={res.mats.floor} receiveShadow onClick={onClick} />;
+}
+
+function Rugs({ fp }: { fp: FloorPlan }) {
   const { res } = useScene();
   const geo = useGeometries(() => ({ plane: xform(new THREE.PlaneGeometry(1, 1), { rx: -Math.PI / 2 }) }));
-  const matrices = useMemo(() => ZONE_RUGS.map((r) => mat4(r.center.x, 0.006, r.center.z, 0, r.w, 1, r.d)), []);
+  const matrices = useMemo(() => fp.rugs.map((r) => mat4(r.center.x, 0.006, r.center.z, 0, r.w, 1, r.d)), [fp]);
   const colors = useMemo(() => {
-    const floor = new THREE.Color("#d9d5ce");
-    return ZONE_RUGS.map((r) => new THREE.Color(zoneColors[r.zone] ?? "#9c8a70").lerp(floor, r.zone === "lounge" ? 0.45 : 0.72));
-  }, [zoneColors]);
-  const parts = useMemo(() => [{ geometry: geo.plane, material: res.mats.rug, tinted: true }], [geo, res]);
+    const floor = new THREE.Color("#d2cdc5");
+    return fp.rugs.map((r) => new THREE.Color(r.color).lerp(floor, r.color === "#9c8a70" ? 0.45 : 0.74));
+  }, [fp]);
+  const parts = useMemo(() => [{ geometry: geo.plane!, material: res.mats.rug, tinted: true }], [geo, res]);
   return <InstancedParts parts={parts} matrices={matrices} colors={colors} cast={false} />;
 }
 
 // ───────────────────────── Furniture ─────────────────────────
 
-function Desks({ statusByZone, accentByZone }: { statusByZone: Partial<Record<OfficeZone, AgentStatus>>; accentByZone: Partial<Record<OfficeZone, string>> }) {
+function Desks({ fp, statusByDesk, accentByDesk }: { fp: FloorPlan; statusByDesk: Map<string, AgentStatus>; accentByDesk: Map<string, string> }) {
   const { res } = useScene();
   const geo = useGeometries(() => ({
     top: boxAt(1, 0.04, 1, { y: DESK_HEIGHT - 0.02 }),
@@ -207,42 +198,38 @@ function Desks({ statusByZone, accentByZone }: { statusByZone: Partial<Record<Of
     ]),
     screen: xform(new THREE.PlaneGeometry(0.52, 0.29), { y: DESK_HEIGHT + 0.29, z: 0.0165 }),
   }));
-
-  const deskList = useMemo(() => [...DESKS, ...SECONDARY_DESKS].map((d) => ({ c: d.center, yaw: d.yaw, w: d.width, d: d.depth })), []);
-  const deskMatrices = useMemo(() => deskList.map((d) => mat4(d.c.x, 0, d.c.z, d.yaw, d.w, 1, d.d)), [deskList]);
-  const deskParts = useMemo(() => [{ geometry: geo.top, material: res.mats.wood }, { geometry: geo.legs, material: res.mats.metal }], [geo, res]);
-
+  const deskMatrices = useMemo(() => fp.desks.map((d) => mat4(d.center.x, 0, d.center.z, d.yaw, d.width, 1, d.depth)), [fp]);
+  const deskParts = useMemo(() => [{ geometry: geo.top!, material: res.mats.wood }, { geometry: geo.legs!, material: res.mats.metal }], [geo, res]);
   const monitors = useMemo(() => {
-    const out: Array<{ m: THREE.Matrix4; zone: OfficeZone }> = [];
-    for (const d of [...DESKS, ...SECONDARY_DESKS]) {
-      const offsets = d.monitors === 3 ? [-0.6, 0, 0.6] : d.monitors === 2 ? [-0.3, 0.3] : d.monitors === 1 ? [0] : [];
+    const out: Array<{ m: THREE.Matrix4; desk: string }> = [];
+    for (const d of fp.desks) {
+      const offsets = d.monitors >= 3 ? [-0.6, 0, 0.6] : d.monitors === 2 ? [-0.3, 0.3] : d.monitors === 1 ? [0] : [];
       const userZ = -(d.depth / 2 + 0.42);
       for (const lx of offsets) {
         const lz = d.depth / 2 - 0.22;
         const p = local(d.center.x, d.center.z, d.yaw, lx, lz);
-        const yaw = d.yaw + Math.atan2(0 - lx, userZ - lz);
-        out.push({ m: mat4(p.x, 0, p.z, yaw), zone: d.zone });
+        out.push({ m: mat4(p.x, 0, p.z, d.yaw + Math.atan2(0 - lx, userZ - lz)), desk: d.id });
       }
     }
     return out;
-  }, []);
+  }, [fp]);
   const monitorMatrices = useMemo(() => monitors.map((m) => m.m), [monitors]);
-  const screenColors = useMemo(() => monitors.map(({ zone }) => {
-    const status = statusByZone[zone] ?? "idle";
-    const accent = accentByZone[zone] ?? "#6366f1";
+  const screenColors = useMemo(() => monitors.map(({ desk }) => {
+    const status = statusByDesk.get(desk);
     const white = new THREE.Color("#ffffff");
     switch (status) {
-      case "working": return white.lerp(new THREE.Color(accent), 0.28);
+      case "working": return white.lerp(new THREE.Color(accentByDesk.get(desk) ?? "#6366f1"), 0.28);
+      case "thinking": return white.lerp(new THREE.Color("#8b5cf6"), 0.3);
+      case "collaborating": return white.lerp(new THREE.Color("#0ea5e9"), 0.3);
       case "waiting": return white.lerp(new THREE.Color("#f59e0b"), 0.4);
       case "error": return white.lerp(new THREE.Color("#ef4444"), 0.5);
-      case "paused": return new THREE.Color("#0b0d12");
       case "meeting": return new THREE.Color("#1d2433");
+      case undefined: return new THREE.Color("#0b0d12"); // unoccupied desk: screen off
       default: return new THREE.Color("#3a4356");
     }
-  }), [monitors, statusByZone, accentByZone]);
-  const monitorParts = useMemo(() => [{ geometry: geo.monitor, material: res.mats.metal }], [geo, res]);
-  const screenParts = useMemo(() => [{ geometry: geo.screen, material: res.mats.screen, tinted: true }], [geo, res]);
-
+  }), [monitors, statusByDesk, accentByDesk]);
+  const monitorParts = useMemo(() => [{ geometry: geo.monitor!, material: res.mats.metal }], [geo, res]);
+  const screenParts = useMemo(() => [{ geometry: geo.screen!, material: res.mats.screen, tinted: true }], [geo, res]);
   return (
     <>
       <InstancedParts parts={deskParts} matrices={deskMatrices} />
@@ -252,27 +239,18 @@ function Desks({ statusByZone, accentByZone }: { statusByZone: Partial<Record<Of
   );
 }
 
-function Chairs() {
+function Chairs({ fp }: { fp: FloorPlan }) {
   const { res } = useScene();
   const geo = useGeometries(() => ({
-    fabric: merge([
-      boxAt(0.5, 0.08, 0.48, { y: 0.44 }),
-      boxAt(0.47, 0.52, 0.07, { y: 0.78, z: -0.23, rx: -0.12 }),
-    ]),
+    fabric: merge([boxAt(0.5, 0.08, 0.48, { y: 0.44 }), boxAt(0.47, 0.52, 0.07, { y: 0.78, z: -0.23, rx: -0.12 })]),
     frame: merge([
       cylAt(0.028, 0.028, 0.32, 8, { y: 0.24 }),
       ...[0, 1, 2, 3, 4].map((i) => boxAt(0.04, 0.03, 0.3, { y: 0.06, ry: (i / 5) * Math.PI * 2, x: Math.sin((i / 5) * Math.PI * 2) * 0.14, z: Math.cos((i / 5) * Math.PI * 2) * 0.14 })),
       boxAt(0.03, 0.22, 0.03, { y: 0.52, z: -0.23 }),
     ]),
   }));
-  const matrices = useMemo(() => {
-    const spots = [
-      ...DESKS.map((d) => d.seat), MEETING_HEAD_SEAT, ...MEETING_SIDE_SEATS,
-      ...EXTRA_CHAIRS,
-    ];
-    return spots.map((s) => mat4(s.x, 0, s.z, s.yaw));
-  }, []);
-  const parts = useMemo(() => [{ geometry: geo.fabric, material: res.mats.fabric }, { geometry: geo.frame, material: res.mats.metal }], [geo, res]);
+  const matrices = useMemo(() => fp.chairs.map((s) => mat4(s.x, 0, s.z, s.yaw)), [fp]);
+  const parts = useMemo(() => [{ geometry: geo.fabric!, material: res.mats.fabric }, { geometry: geo.frame!, material: res.mats.metal }], [geo, res]);
   return <InstancedParts parts={parts} matrices={matrices} />;
 }
 
@@ -286,13 +264,13 @@ function sofaGeometry(width: number) {
   ]);
 }
 
-function Seating() {
+function Seating({ fp }: { fp: FloorPlan }) {
   const { res } = useScene();
-  const geo = useGeometries(() => ({ sofa: sofaGeometry(SOFAS[0].width), armchair: sofaGeometry(ARMCHAIRS[0].width) }));
-  const sofaM = useMemo(() => SOFAS.map((s) => mat4(s.center.x, 0, s.center.z, s.yaw)), []);
-  const armM = useMemo(() => ARMCHAIRS.map((s) => mat4(s.center.x, 0, s.center.z, s.yaw)), []);
-  const sofaParts = useMemo(() => [{ geometry: geo.sofa, material: res.mats.sofa }], [geo, res]);
-  const armParts = useMemo(() => [{ geometry: geo.armchair, material: res.mats.sofa }], [geo, res]);
+  const geo = useGeometries(() => ({ sofa: sofaGeometry(2.3), armchair: sofaGeometry(0.95) }));
+  const sofaM = useMemo(() => fp.sofas.filter((s) => s.width > 1.5).map((s) => mat4(s.center.x, 0, s.center.z, s.yaw)), [fp]);
+  const armM = useMemo(() => fp.sofas.filter((s) => s.width <= 1.5).map((s) => mat4(s.center.x, 0, s.center.z, s.yaw)), [fp]);
+  const sofaParts = useMemo(() => [{ geometry: geo.sofa!, material: res.mats.sofa }], [geo, res]);
+  const armParts = useMemo(() => [{ geometry: geo.armchair!, material: res.mats.sofa }], [geo, res]);
   return (
     <>
       <InstancedParts parts={sofaParts} matrices={sofaM} />
@@ -301,7 +279,7 @@ function Seating() {
   );
 }
 
-function Plants() {
+function Plants({ fp }: { fp: FloorPlan }) {
   const { res } = useScene();
   const geo = useGeometries(() => ({
     pot: merge([cylAt(0.2, 0.16, 0.42, 14, { y: 0.21 }), cylAt(0.185, 0.185, 0.02, 14, { y: 0.41 })]),
@@ -312,12 +290,12 @@ function Plants() {
       xform(new THREE.IcosahedronGeometry(0.17, 0), { y: 1.38, rx: 0.4 }),
     ]),
   }));
-  const matrices = useMemo(() => PLANTS.map((p, i) => mat4(p.x, 0, p.z, i * 1.7, p.scale, p.scale, p.scale)), []);
-  const parts = useMemo(() => [{ geometry: geo.pot, material: res.mats.pot }, { geometry: geo.leaves, material: res.mats.plant }], [geo, res]);
+  const matrices = useMemo(() => fp.plants.map((p, i) => mat4(p.x, 0, p.z, i * 1.7, p.scale, p.scale, p.scale)), [fp]);
+  const parts = useMemo(() => [{ geometry: geo.pot!, material: res.mats.pot }, { geometry: geo.leaves!, material: res.mats.plant }], [geo, res]);
   return <InstancedParts parts={parts} matrices={matrices} />;
 }
 
-function Pendants() {
+function Pendants({ fp }: { fp: FloorPlan }) {
   const { res } = useScene();
   const geo = useGeometries(() => ({
     shade: merge([
@@ -326,9 +304,9 @@ function Pendants() {
     ]),
     glow: xform(new THREE.CircleGeometry(0.185, 20), { y: 2.79, rx: Math.PI / 2 }),
   }));
-  const matrices = useMemo(() => PENDANTS.map((p) => mat4(p.x, 0, p.z, 0)), []);
-  const parts = useMemo(() => [{ geometry: geo.shade, material: res.mats.lampShade }], [geo, res]);
-  const glowParts = useMemo(() => [{ geometry: geo.glow, material: res.mats.lampGlow }], [geo, res]);
+  const matrices = useMemo(() => fp.pendants.map((p) => mat4(p.x, 0, p.z, 0)), [fp]);
+  const parts = useMemo(() => [{ geometry: geo.shade!, material: res.mats.lampShade }], [geo, res]);
+  const glowParts = useMemo(() => [{ geometry: geo.glow!, material: res.mats.lampGlow }], [geo, res]);
   return (
     <>
       <InstancedParts parts={parts} matrices={matrices} receive={false} />
@@ -337,161 +315,136 @@ function Pendants() {
   );
 }
 
-function Tables() {
-  const { res } = useScene();
-  const geo = useGeometries(() => ({
-    meetingTop: boxAt(MEETING_TABLE.length, 0.05, MEETING_TABLE.width, { y: DESK_HEIGHT - 0.025 }),
-    meetingBase: merge([
-      boxAt(0.12, DESK_HEIGHT - 0.05, 0.7, { x: -1.6, y: (DESK_HEIGHT - 0.05) / 2 }),
-      boxAt(0.12, DESK_HEIGHT - 0.05, 0.7, { x: 1.6, y: (DESK_HEIGHT - 0.05) / 2 }),
-      boxAt(3.4, 0.06, 0.12, { y: 0.03 }),
-      boxAt(0.2, 0.012, 0.6, { x: 0, y: DESK_HEIGHT + 0.006 }), // cable tray lid / centre console
-    ]),
-    roundTop: cylAt(ROUND_TABLES[0].radius, ROUND_TABLES[0].radius, 0.04, 28, { y: DESK_HEIGHT - 0.02 }),
-    roundBase: merge([cylAt(0.04, 0.04, DESK_HEIGHT - 0.04, 10, { y: (DESK_HEIGHT - 0.04) / 2 }), cylAt(0.25, 0.27, 0.03, 20, { y: 0.015 })]),
-    coffeeTop: boxAt(COFFEE_TABLE.width, 0.05, COFFEE_TABLE.depth, { y: 0.4 }),
-    coffeeLegs: merge([-1, 1].flatMap((sx) => [-1, 1].map((sz) => boxAt(0.04, 0.38, 0.04, { x: sx * (COFFEE_TABLE.width / 2 - 0.06), y: 0.19, z: sz * (COFFEE_TABLE.depth / 2 - 0.06) })))),
-  }));
-  const roundMatrices = useMemo(() => ROUND_TABLES.map((t) => mat4(t.center.x, 0, t.center.z, 0)), []);
-  const roundParts = useMemo(() => [{ geometry: geo.roundTop, material: res.mats.wood }, { geometry: geo.roundBase, material: res.mats.metal }], [geo, res]);
-  return (
-    <group>
-      <mesh geometry={geo.meetingTop} material={res.mats.woodDark} position={[MEETING_TABLE.center.x, 0, MEETING_TABLE.center.z]} castShadow receiveShadow raycast={() => null} />
-      <mesh geometry={geo.meetingBase} material={res.mats.metal} position={[MEETING_TABLE.center.x, 0, MEETING_TABLE.center.z]} castShadow raycast={() => null} />
-      <InstancedParts parts={roundParts} matrices={roundMatrices} />
-      <mesh geometry={geo.coffeeTop} material={res.mats.stone} position={[COFFEE_TABLE.center.x, 0, COFFEE_TABLE.center.z]} castShadow receiveShadow raycast={() => null} />
-      <mesh geometry={geo.coffeeLegs} material={res.mats.metal} position={[COFFEE_TABLE.center.x, 0, COFFEE_TABLE.center.z]} raycast={() => null} />
-    </group>
-  );
-}
-
-// ───────────────────────── Decor (single merged, vertex-coloured mesh) ─────────────────────────
+// ───────────────────────── Decor (single merged, vertex-coloured mesh per floor) ─────────────────────────
 
 function boxIn(spec: BoxSpec, w: number, h: number, d: number, lx: number, y: number, lz: number, color: string) {
   const p = local(spec.center.x, spec.center.z, spec.yaw, lx, lz);
   return paint(boxAt(w, h, d, { x: p.x, y, z: p.z, ry: spec.yaw }), color);
 }
 
-function buildDecor(): THREE.BufferGeometry {
+function buildDecor(fp: FloorPlan): THREE.BufferGeometry | null {
   const parts: THREE.BufferGeometry[] = [];
-  const rnd = mulberry32(42);
-  const bookColors = ["#7b2d26", "#1f3a5f", "#c8a24a", "#2f5d50", "#e5ddd0", "#5b4a7a", "#a14a2e", "#344054"];
-  const wood = "#8a5f3d", woodLight = "#b9875c", metal = "#2d3138", stone = "#eceae5";
+  const metal = "#2d3138", stone = "#eceae5", woodLight = "#b9875c", woodDark = "#6e4a32";
 
-  // Bookshelves.
-  for (const [spec, shelves] of [[BOOKSHELF, 5], [WRITING_SHELF, 3]] as Array<[BoxSpec, number]>) {
-    const { w, d, h } = spec;
-    parts.push(boxIn(spec, 0.04, h, d, -w / 2 + 0.02, h / 2, 0, wood), boxIn(spec, 0.04, h, d, w / 2 - 0.02, h / 2, 0, wood));
-    parts.push(boxIn(spec, w, 0.03, d, 0, h - 0.015, 0, wood), boxIn(spec, w, 0.02, d - 0.02, 0, h / 2, -d / 2 + 0.01, "#6b4a31"));
-    for (let s = 0; s < shelves; s++) {
-      const y = 0.06 + (s * (h - 0.1)) / shelves;
-      parts.push(boxIn(spec, w - 0.06, 0.025, d, 0, y, 0, wood));
-      let x = -w / 2 + 0.07;
-      while (x < w / 2 - 0.12) {
-        const bw = 0.025 + rnd() * 0.035, bh = 0.18 + rnd() * 0.12;
-        if (rnd() > 0.12) parts.push(boxIn(spec, bw, bh, d * 0.75, x + bw / 2, y + 0.0125 + bh / 2, 0.02, bookColors[Math.floor(rnd() * bookColors.length)]));
-        x += bw + 0.004;
-      }
-    }
+  for (const t of fp.tables) {
+    const spec: BoxSpec = { center: t.center, w: t.length, d: t.width, h: DESK_HEIGHT, yaw: 0 };
+    parts.push(boxIn(spec, t.length, 0.05, t.width, 0, DESK_HEIGHT - 0.025, 0, woodDark));
+    for (const lx of [-t.length / 2 + 0.6, t.length / 2 - 0.6]) parts.push(boxIn(spec, 0.12, DESK_HEIGHT - 0.05, t.width * 0.5, lx, (DESK_HEIGHT - 0.05) / 2, 0, metal));
+    parts.push(boxIn(spec, 0.2, 0.012, Math.min(0.6, t.width - 0.4), 0, DESK_HEIGHT + 0.006, 0, "#1f2329"));
   }
-  // Executive credenza.
-  parts.push(boxIn(CREDENZA, CREDENZA.w, CREDENZA.h - 0.03, CREDENZA.d, 0, (CREDENZA.h - 0.03) / 2, 0, "#5c3f2b"));
-  parts.push(boxIn(CREDENZA, CREDENZA.w + 0.02, 0.03, CREDENZA.d + 0.02, 0, CREDENZA.h - 0.015, 0, stone));
-  for (const lx of [-1.1, 0, 1.1]) parts.push(boxIn(CREDENZA, 0.3, 0.015, 0.01, lx, CREDENZA.h - 0.12, CREDENZA.d / 2 + 0.005, "#c9a24a"));
-  // Filing cabinets.
-  for (const fc of FILING_CABINETS) {
-    parts.push(boxIn(fc, fc.w, fc.h, fc.d, 0, fc.h / 2, 0, "#c9ccd1"));
-    for (let i = 0; i < 4; i++) parts.push(boxIn(fc, fc.w - 0.08, 0.012, 0.01, 0, 0.16 + i * 0.31, fc.d / 2 + 0.004, "#7b8089"));
+  for (const c of fp.coffeeTables) {
+    const spec: BoxSpec = { center: c.center, w: c.w, d: c.d, h: 0.42, yaw: 0 };
+    parts.push(boxIn(spec, c.w, 0.05, c.d, 0, 0.4, 0, stone));
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) parts.push(boxIn(spec, 0.04, 0.38, 0.04, sx * (c.w / 2 - 0.06), 0.19, sz * (c.d / 2 - 0.06), metal));
   }
-  // Server racks with status LEDs.
-  for (const sr of SERVER_RACKS) {
-    parts.push(boxIn(sr, sr.w, sr.h, sr.d, 0, sr.h / 2, 0, "#1d2127"));
-    for (let i = 0; i < 9; i++) {
-      parts.push(boxIn(sr, sr.w - 0.1, 0.012, 0.01, 0, 0.2 + i * 0.19, sr.d / 2 + 0.004, "#3a414b"));
-      parts.push(boxIn(sr, 0.03, 0.02, 0.012, sr.w / 2 - 0.09, 0.24 + i * 0.19, sr.d / 2 + 0.006, i % 3 === 0 ? "#5be38c" : "#4fa3ff"));
-    }
+  for (const bar of fp.bars) {
+    parts.push(boxIn(bar, bar.w, bar.h - 0.04, bar.d, 0, (bar.h - 0.04) / 2, 0, woodLight));
+    parts.push(boxIn(bar, bar.w + 0.04, 0.04, bar.d + 0.04, 0, bar.h - 0.02, 0, stone));
+    parts.push(boxIn(bar, 0.42, 0.42, 0.38, -1.1, bar.h + 0.21, 0, "#262a30"), boxIn(bar, 0.36, 0.08, 0.02, -1.1, bar.h + 0.3, -0.2, "#9aa3ad"));
+    parts.push(boxIn(bar, 0.3, 0.32, 0.3, 1.2, bar.h + 0.16, 0, "#e9e6e0"));
+    for (let i = 0; i < 4; i++) parts.push(paint(cylAt(0.04, 0.035, 0.09, 10, { x: bar.center.x - 0.4 + i * 0.16, y: bar.h + 0.045, z: bar.center.z + 0.05 }), "#fafafa"));
   }
-  // Marketing mood board (abstract swatches).
-  parts.push(boxIn(MOOD_BOARD, MOOD_BOARD.w, MOOD_BOARD.h, MOOD_BOARD.d, 0, 0.55 + MOOD_BOARD.h / 2, 0, "#f4f1ea"));
-  parts.push(boxIn(MOOD_BOARD, 0.04, 0.6, 0.04, -0.7, 0.3, 0, metal), boxIn(MOOD_BOARD, 0.04, 0.6, 0.04, 0.7, 0.3, 0, metal));
-  const swatches = ["#ca8a04", "#f59e0b", "#1f2937", "#db2777", "#0d9488", "#e5e7eb", "#7c3aed", "#fde68a"];
-  for (let i = 0; i < 8; i++) {
-    const col = i % 4, row = Math.floor(i / 4);
-    parts.push(boxIn(MOOD_BOARD, 0.38, 0.42 + (i % 3) * 0.06, 0.01, -0.66 + col * 0.44, 0.85 + row * 0.62, MOOD_BOARD.d / 2 + 0.006, swatches[i]));
+  for (const c of fp.credenzas) {
+    parts.push(boxIn(c, c.w, c.h - 0.03, c.d, 0, (c.h - 0.03) / 2, 0, "#5c3f2b"));
+    parts.push(boxIn(c, c.w + 0.02, 0.03, c.d + 0.02, 0, c.h - 0.015, 0, stone));
+    for (const lx of [-c.w / 3, 0, c.w / 3]) parts.push(boxIn(c, 0.3, 0.015, 0.01, lx, c.h - 0.12, c.d / 2 + 0.005, "#c9a24a"));
   }
-  // Coffee bar.
-  const bar = { center: COFFEE_BAR.center, w: COFFEE_BAR.width, d: COFFEE_BAR.depth, h: 1.0, yaw: 0 };
-  parts.push(boxIn(bar, bar.w, bar.h - 0.04, bar.d, 0, (bar.h - 0.04) / 2, 0, woodLight));
-  parts.push(boxIn(bar, bar.w + 0.04, 0.04, bar.d + 0.04, 0, bar.h - 0.02, 0, stone));
-  parts.push(boxIn(bar, 0.42, 0.42, 0.38, -1.1, bar.h + 0.21, 0, "#262a30"), boxIn(bar, 0.36, 0.08, 0.02, -1.1, bar.h + 0.3, -0.2, "#9aa3ad"));
-  parts.push(boxIn(bar, 0.3, 0.32, 0.3, 1.2, bar.h + 0.16, 0, "#e9e6e0"));
-  for (let i = 0; i < 4; i++) parts.push(paint(cylAt(0.04, 0.035, 0.09, 10, { x: bar.center.x - 0.4 + i * 0.16, y: bar.h + 0.045, z: bar.center.z + 0.05 }), "#fafafa"));
-  // Planters between departments.
-  for (const pl of PLANTERS) {
-    parts.push(boxIn(pl, pl.w, pl.h, pl.d, 0, pl.h / 2, 0, "#d8d2c7"));
-    for (let i = 0; i < 5; i++) {
-      const p = local(pl.center.x, pl.center.z, pl.yaw, -pl.w / 2 + 0.18 + i * ((pl.w - 0.36) / 4), 0);
-      parts.push(paint(xform(new THREE.IcosahedronGeometry(0.2 + rnd() * 0.06, 0), { x: p.x, y: pl.h + 0.12, z: p.z, ry: rnd() * 3 }), "#5c8a4c"));
-    }
-  }
-  // Keyboards, mice and paperwork on desks.
-  for (const d of DESKS) {
+  // Keyboards, mice and a sheet of paper on every desk.
+  for (const d of fp.desks) {
     const kb = local(d.center.x, d.center.z, d.yaw, 0, -d.depth / 2 + 0.2);
     parts.push(paint(boxAt(0.44, 0.018, 0.14, { x: kb.x, y: DESK_HEIGHT + 0.009, z: kb.z, ry: d.yaw }), "#2b2f36"));
     const ms = local(d.center.x, d.center.z, d.yaw, -0.36, -d.depth / 2 + 0.2);
     parts.push(paint(boxAt(0.06, 0.02, 0.1, { x: ms.x, y: DESK_HEIGHT + 0.01, z: ms.z, ry: d.yaw }), "#2b2f36"));
-    const pp = local(d.center.x, d.center.z, d.yaw, 0.62, -0.05);
+    const pp = local(d.center.x, d.center.z, d.yaw, d.width / 2 - 0.22, -0.05);
     parts.push(paint(boxAt(0.21, 0.012, 0.29, { x: pp.x, y: DESK_HEIGHT + 0.006, z: pp.z, ry: d.yaw + 0.2 }), "#f7f6f2"));
   }
-  for (let i = 0; i < 4; i++) {
-    const pp = local(REVIEW_DESK.center.x, REVIEW_DESK.center.z, REVIEW_DESK.yaw, -0.5 + i * 0.33, -0.05 + (i % 2) * 0.1);
-    parts.push(paint(boxAt(0.21, 0.02 + i * 0.01, 0.29, { x: pp.x, y: DESK_HEIGHT + 0.01 + i * 0.005, z: pp.z, ry: REVIEW_DESK.yaw + (i - 1.5) * 0.12 }), i === 2 ? "#7c3aed" : "#f7f6f2"));
-  }
-  // Writing studio floor lamp.
-  parts.push(paint(cylAt(0.015, 0.015, 1.5, 8, { x: -1.4, y: 0.75, z: 9.9 }), metal), paint(cylAt(0.18, 0.18, 0.02, 16, { x: -1.4, y: 0.01, z: 9.9 }), metal));
-  parts.push(paint(cylAt(0.12, 0.2, 0.22, 16, { x: -1.4, y: 1.55, z: 9.9 }), "#efe6d6"));
-  // Display bezels.
-  for (const ds of DEPARTMENT_DISPLAYS) {
+  // Freestanding sign screens: bezel + legs. Wall screens: bezel only.
+  for (const ds of [...fp.signs, ...fp.execWalls, ...fp.meetingScreens]) {
     const back = local(ds.x, ds.z, ds.yaw, 0, -0.03);
     parts.push(paint(boxAt(ds.width + 0.08, ds.height + 0.08, 0.05, { x: back.x, y: ds.y, z: back.z, ry: ds.yaw }), "#15181d"));
     if (ds.freestanding) {
-      for (const lx of [-ds.width / 2 + 0.15, ds.width / 2 - 0.15]) {
+      for (const lx of [-ds.width / 2 + 0.12, ds.width / 2 - 0.12]) {
         const lp = local(ds.x, ds.z, ds.yaw, lx, -0.05);
-        parts.push(paint(boxAt(0.05, ds.y - ds.height / 2, 0.05, { x: lp.x, y: (ds.y - ds.height / 2) / 2, z: lp.z }), metal));
-        parts.push(paint(boxAt(0.08, 0.03, 0.5, { x: lp.x, y: 0.015, z: lp.z, ry: ds.yaw }), metal));
+        const h = ds.y - ds.height / 2;
+        parts.push(paint(boxAt(0.04, h, 0.04, { x: lp.x, y: h / 2, z: lp.z }), metal));
+        parts.push(paint(boxAt(0.07, 0.025, 0.36, { x: lp.x, y: 0.0125, z: lp.z, ry: ds.yaw }), metal));
       }
     }
   }
-  parts.push(paint(boxAt(EXECUTIVE_WALL.width + 0.12, EXECUTIVE_WALL.height + 0.12, 0.05, { x: EXECUTIVE_WALL.x, y: EXECUTIVE_WALL.y, z: EXECUTIVE_WALL.z - 0.03 }), "#111318"));
-  parts.push(paint(boxAt(0.05, MEETING_SCREEN.height + 0.08, MEETING_SCREEN.width + 0.08, { x: MEETING_SCREEN.x + 0.03, y: MEETING_SCREEN.y, z: MEETING_SCREEN.z }), "#15181d"));
-  return merge(parts);
+  // Elevator / stair core.
+  if (fp.core) {
+    const c = fp.core;
+    const cx = (c.minX + c.maxX) / 2, cz = (c.minZ + c.maxZ) / 2;
+    const w = c.maxX - c.minX, d = c.maxZ - c.minZ;
+    parts.push(paint(boxAt(w, WALL_HEIGHT, d, { x: cx, y: WALL_HEIGHT / 2, z: cz }), "#d8d2c8"));
+    parts.push(paint(boxAt(1.2, 2.2, 0.04, { x: cx, y: 1.1, z: c.maxZ + 0.02 }), "#9aa1aa"));
+    parts.push(paint(boxAt(0.02, 2.2, 0.05, { x: cx, y: 1.1, z: c.maxZ + 0.045 }), "#5b616a"));
+    parts.push(paint(boxAt(1.5, 0.12, 0.05, { x: cx, y: 2.45, z: c.maxZ + 0.03 }), "#1f2329"));
+    parts.push(paint(boxAt(0.12, 0.05, 0.06, { x: cx - 0.3, y: 2.45, z: c.maxZ + 0.06 }), "#5be38c"));
+    parts.push(paint(boxAt(0.12, 0.05, 0.06, { x: cx + 0.3, y: 2.45, z: c.maxZ + 0.06 }), "#4fa3ff"));
+  }
+  if (fp.entrance) {
+    // Entrance mat.
+    parts.push(paint(boxAt(1.8, 0.012, 1.2, { x: fp.entrance.x, y: 0.006, z: fp.bounds.maxZ - 0.75 }), "#4a4f57"));
+  }
+  return parts.length ? merge(parts) : null;
 }
 
-function Decor() {
+function Decor({ fp }: { fp: FloorPlan }) {
   const { res } = useScene();
-  const geo = useGeometries(() => ({ decor: buildDecor() }));
+  const geo = useGeometries(() => ({ decor: buildDecor(fp) }));
+  if (!geo.decor) return null;
   return <mesh geometry={geo.decor} material={res.mats.decor} castShadow receiveShadow raycast={() => null} />;
 }
 
 export interface OfficeEnvironmentProps {
+  plan: OfficePlan;
+  view: number | "all";
+  offsets: Vec2[];
   onFloorClick: () => void;
-  zoneColors: Partial<Record<OfficeZone, string>>;
-  statusByZone: Partial<Record<OfficeZone, AgentStatus>>;
+  statusByDesk: Map<string, AgentStatus>;
+  accentByDesk: Map<string, string>;
 }
 
-export function OfficeEnvironment({ onFloorClick, zoneColors, statusByZone }: OfficeEnvironmentProps) {
+function FloorView({ fp, offset, visible, onFloorClick, statusByDesk, accentByDesk }: {
+  fp: FloorPlan; offset: Vec2; visible: boolean; onFloorClick: () => void; statusByDesk: Map<string, AgentStatus>; accentByDesk: Map<string, string>;
+}) {
+  return (
+    <group position={[offset.x, 0, offset.z]} visible={visible}>
+      <FloorSlab fp={fp} onMiss={onFloorClick} />
+      <Rugs fp={fp} />
+      <Shell fp={fp} offset={offset} />
+      <Desks fp={fp} statusByDesk={statusByDesk} accentByDesk={accentByDesk} />
+      <Chairs fp={fp} />
+      <Seating fp={fp} />
+      <Plants fp={fp} />
+      <Pendants fp={fp} />
+      <Decor fp={fp} />
+    </group>
+  );
+}
+
+const ORIGIN: Vec2 = { x: 0, z: 0 };
+
+/** All floors of the plan. Static geometry is keyed by layout revision: rebuilt (and the old disposed) only when it changes. */
+export function OfficeEnvironment({ plan, view, offsets, onFloorClick, statusByDesk, accentByDesk }: OfficeEnvironmentProps) {
   return (
     <group>
-      <Floor onMiss={onFloorClick} />
-      <Rugs zoneColors={zoneColors} />
-      <Shell />
-      <Desks statusByZone={statusByZone} accentByZone={zoneColors} />
-      <Chairs />
-      <Seating />
-      <Tables />
-      <Plants />
-      <Pendants />
-      <Decor />
+      <mesh rotation-x={-Math.PI / 2} position={[0, -0.03, 0]} raycast={() => null}>
+        <planeGeometry args={[600, 600]} />
+        <meshStandardMaterial color="#cfcbc4" roughness={1} />
+      </mesh>
+      {plan.floors.map((fp) => (
+        <FloorView
+          key={`${plan.revision}:${fp.index}`}
+          fp={fp}
+          offset={offsets[fp.index] ?? ORIGIN}
+          visible={view === "all" || view === fp.index}
+          onFloorClick={onFloorClick}
+          statusByDesk={statusByDesk}
+          accentByDesk={accentByDesk}
+        />
+      ))}
     </group>
   );
 }

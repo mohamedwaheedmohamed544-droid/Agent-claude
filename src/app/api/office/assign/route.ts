@@ -3,12 +3,11 @@ import { readJson, workspaceRoute } from "@/lib/api";
 import { isAiConfigured } from "@/lib/ai/llm";
 import { unavailable } from "@/lib/errors";
 import { handleChatMessage } from "@/lib/orchestrator/chat";
-import { AGENT_SLUGS } from "@/lib/agents/definitions";
 
 export const maxDuration = 300;
 
 const Body = z.object({
-  agent: z.enum(AGENT_SLUGS as [string, ...string[]]),
+  agent: z.string().regex(/^[a-z][a-z0-9_]{0,60}$/),
   message: z.string().trim().min(2).max(20_000),
   conversationId: z.string().uuid().nullish(),
 });

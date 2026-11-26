@@ -18,6 +18,8 @@ export interface ToolContext {
   conversationId: string | null;
   /** Stable key for external side effects (forwarded as Idempotency-Key where supported). */
   idempotencyKey?: string;
+  /** Whether the calling agent may read other agents' private memory. */
+  memoryAccess?: "own" | "shared";
 }
 
 export interface ApprovalPreview {

@@ -1,5 +1,5 @@
 import { chatJson, type ChatMessage } from "../ai/llm";
-import { AGENT_SLUGS, ORCHESTRATOR_PROMPT } from "../agents/definitions";
+import { buildOrchestratorPrompt, type RosterEntry } from "../agents/definitions";
 import { wrapUntrusted } from "../security/untrusted";
 
 export interface PlanStep {
@@ -22,7 +22,7 @@ export interface Plan {
   steps: PlanStep[];
 }
 
-export const PLAN_SCHEMA = {
+export const planSchema = (slugs: string[]) => ({
   type: "object",
   additionalProperties: false,
   required: ["mode", "title", "reply", "steps"],
@@ -39,8 +39,8 @@ export const PLAN_SCHEMA = {
         properties: {
           key: { type: "string" },
           kind: { type: "string", enum: ["agent", "meeting"] },
-          agent: { type: "string", enum: AGENT_SLUGS },
-          participants: { type: "array", items: { type: "string", enum: AGENT_SLUGS } },
+          agent: { type: "string", enum: slugs.length ? slugs : ["none"] },
+          participants: { type: "array", items: { type: "string", enum: slugs.length ? slugs : ["none"] } },
           title: { type: "string" },
           instruction: { type: "string" },
           expected_output: { type: "string" },
@@ -50,12 +50,12 @@ export const PLAN_SCHEMA = {
       },
     },
   },
-} as const;
+});
 
 export class PlanValidationError extends Error {}
 
 /** Validates structure and makes the dependency graph a DAG. Returns a normalised plan. */
-export function validatePlan(plan: Plan, activeAgents: string[] = AGENT_SLUGS): Plan {
+export function validatePlan(plan: Plan, activeAgents: string[], meetingCapable: string[] = activeAgents): Plan {
   if (!["direct", "single", "multi"].includes(plan.mode)) throw new PlanValidationError("Invalid mode");
   if (plan.mode === "direct") {
     if (!plan.reply?.trim()) throw new PlanValidationError("Direct mode requires a reply");
@@ -72,7 +72,7 @@ export function validatePlan(plan: Plan, activeAgents: string[] = AGENT_SLUGS): 
     if (s.kind === "meeting") {
       s.participants = [...new Set(s.participants ?? [])];
       if (s.participants.length < 2 || s.participants.length > 4) throw new PlanValidationError(`Meeting ${s.key} needs 2–4 specialist participants`);
-      const bad = s.participants.find((p) => !activeAgents.includes(p));
+      const bad = s.participants.find((p) => !activeAgents.includes(p) || !meetingCapable.includes(p));
       if (bad) throw new PlanValidationError(`Unknown or inactive meeting participant ${bad}`);
       s.agent = "orchestrator";
     } else {
@@ -109,7 +109,8 @@ export interface PlanInput {
   history: Array<{ role: "user" | "assistant"; content: string }>;
   attachments?: Array<{ id: string; filename: string }>;
   memoryContext?: string[];
-  activeAgents?: string[];
+  /** Live roster from the database (assignable specialists). */
+  roster: RosterEntry[];
   locale?: "en" | "ar";
 }
 
@@ -119,7 +120,6 @@ export async function planRequest(input: PlanInput): Promise<Plan> {
     historyText ? `Recent conversation (data):\n${wrapUntrusted("conversation_history", historyText)}` : "",
     input.memoryContext?.length ? `Known user/workspace context:\n${wrapUntrusted("memory", input.memoryContext.map((m) => `- ${m}`).join("\n"))}` : "",
     input.attachments?.length ? `Files attached to this message (agents can read them by id): ${input.attachments.map((a) => `${a.filename} (id ${a.id})`).join(", ")}` : "",
-    input.activeAgents ? `Agents currently enabled: ${input.activeAgents.join(", ")}` : "",
     `The user's interface language is ${input.locale === "ar" ? "Arabic" : "English"}.`,
     `Plan the response to this request:`,
     `<user_request>${input.request}</user_request>`,
@@ -129,14 +129,14 @@ export async function planRequest(input: PlanInput): Promise<Plan> {
   let lastErr: Error | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     const { data } = await chatJson<Plan>({
-      system: ORCHESTRATOR_PROMPT,
+      system: buildOrchestratorPrompt(input.roster),
       messages: lastErr ? [...messages, { role: "user", content: `Your previous plan was invalid: ${lastErr.message}. Return a corrected plan.` }] : messages,
-      jsonSchema: { name: "task_plan", schema: PLAN_SCHEMA as unknown as Record<string, unknown> },
+      jsonSchema: { name: "task_plan", schema: planSchema(input.roster.map((r) => r.slug)) as unknown as Record<string, unknown> },
       tier: "standard",
       ctx: { workspaceId: input.workspaceId, userId: input.userId, agentSlug: "orchestrator", purpose: "planning" },
     });
     try {
-      return validatePlan(data, input.activeAgents);
+      return validatePlan(data, input.roster.map((r) => r.slug), input.roster.filter((r) => r.canJoinMeetings).map((r) => r.slug));
     } catch (e) {
       lastErr = e as Error;
     }

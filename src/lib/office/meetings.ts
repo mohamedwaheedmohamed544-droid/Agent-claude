@@ -7,7 +7,7 @@ import { AppError } from "../errors";
 import { redactSecrets } from "../security/crypto";
 import { wrapUntrusted } from "../security/untrusted";
 import { emitEvent, sendAgentMessage } from "./events";
-import { PROFILE_BY_SLUG } from "./profiles";
+import { getDirectory, meetingRoomFor } from "./directory";
 import type { MeetingDetail, MeetingSummary } from "./types";
 
 export const MEETING_ROUNDS = 2;
@@ -25,10 +25,11 @@ export interface MeetingInput {
   inputs: Array<{ key: string; agent: string; title: string; output: string }>;
 }
 
-const nameOf = (slug: string) => {
-  const p = PROFILE_BY_SLUG.get(slug);
-  return p ? `${p.nameAr} (${p.titleEn})` : slug;
-};
+let names = new Map<string, string>();
+const nameOf = (slug: string) => names.get(slug) ?? slug;
+async function loadNames(workspaceId: string) {
+  names = new Map((await getDirectory(workspaceId, { includeDeleted: true })).map((d) => [d.slug, `${d.nameAr} (${d.titleEn || d.nameEn})`]));
+}
 
 function agendaFrom(instruction: string): string[] {
   const lines = instruction.split(/\n|;|(?:\s+-\s+)|(?:\d+\.\s+)/).map((l) => l.trim()).filter((l) => l.length > 3);
@@ -59,14 +60,15 @@ const SUMMARY_SCHEMA = (allowed: string[]) => ({
  * existing (participant, round) messages are reused instead of regenerated.
  */
 export async function runMeeting(m: MeetingInput): Promise<{ output: string; meetingId: string }> {
+  await loadNames(m.workspaceId);
   const participants = [...new Set(m.participants)].filter((p) => p !== CHAIR);
   if (participants.length < 1) throw new AppError(400, "invalid_meeting", "A meeting needs at least one specialist participant");
 
   let meeting = await queryOne<{ id: string; status: string }>("SELECT id, status FROM meetings WHERE step_id=$1", [m.stepId]);
   if (!meeting) {
     meeting = await queryOne<{ id: string; status: string }>(
-      `INSERT INTO meetings(workspace_id, task_id, step_id, objective, agenda, chair_slug) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, status`,
-      [m.workspaceId, m.taskId, m.stepId, m.title.slice(0, 300), JSON.stringify(agendaFrom(m.instruction)), CHAIR],
+      `INSERT INTO meetings(workspace_id, task_id, step_id, objective, agenda, chair_slug, room_key) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, status`,
+      [m.workspaceId, m.taskId, m.stepId, m.title.slice(0, 300), JSON.stringify(agendaFrom(m.instruction)), CHAIR, await meetingRoomFor(m.workspaceId, participants)],
     );
     await query(
       `INSERT INTO meeting_participants(meeting_id, agent_slug, role) SELECT $1, x, CASE WHEN x=$2 THEN 'chair' ELSE 'participant' END FROM unnest($3::text[]) x
@@ -79,12 +81,13 @@ export async function runMeeting(m: MeetingInput): Promise<{ output: string; mee
         content: `Meeting: ${m.title}\n${m.instruction}`,
       });
     }
-    await emitEvent({ workspaceId: m.workspaceId, agent: CHAIR, type: "meeting_started", taskId: m.taskId, stepId: m.stepId, meetingId: meeting!.id, zone: "meeting_room", summary: m.title, payload: { participants: [CHAIR, ...participants] } });
+    await emitEvent({ workspaceId: m.workspaceId, agent: CHAIR, type: "meeting_started", taskId: m.taskId, stepId: m.stepId, meetingId: meeting!.id, zone: (await queryOne<{ room_key: string }>("SELECT room_key FROM meetings WHERE id=$1", [meeting!.id]))?.room_key ?? "meeting_room", summary: m.title, payload: { participants: [CHAIR, ...participants] } });
   } else if (meeting.status !== "in_progress") {
     await query("UPDATE meetings SET status='in_progress', completed_at=NULL WHERE id=$1", [meeting.id]);
     await query("UPDATE meeting_participants SET left_at=NULL WHERE meeting_id=$1", [meeting.id]);
   }
   const meetingId = meeting!.id;
+  const room = (await queryOne<{ room_key: string }>("SELECT room_key FROM meetings WHERE id=$1", [meetingId]))?.room_key ?? "meeting_room";
 
   try {
     const inputsBlock = m.inputs.length
@@ -96,7 +99,7 @@ export async function runMeeting(m: MeetingInput): Promise<{ output: string; mee
         const exists = await queryOne("SELECT 1 FROM meeting_messages WHERE meeting_id=$1 AND agent_slug=$2 AND round=$3 AND kind='statement'", [meetingId, slug, round]);
         if (exists) continue;
         const agent = await getAgent(m.workspaceId, slug);
-        if (!agent || !agent.active) throw new AppError(400, "agent_unavailable", `Agent ${slug} is not available for the meeting`);
+        if (!agent || !agent.runnable) throw new AppError(400, "agent_unavailable", `Agent ${slug} is not available for the meeting`);
         const transcript = await query<{ agent_slug: string; round: number; content: string }>(
           "SELECT agent_slug, round, content FROM meeting_messages WHERE meeting_id=$1 AND kind='statement' ORDER BY created_at", [meetingId],
         );
@@ -104,7 +107,7 @@ export async function runMeeting(m: MeetingInput): Promise<{ output: string; mee
           ? wrapUntrusted("meeting_transcript", transcript.map((t) => `[round ${t.round}] ${nameOf(t.agent_slug)}: ${t.content}`).join("\n\n"))
           : "(you speak first)";
         const res = await chat({
-          system: `${SAFETY_POLICY}\n\n${agent.systemPrompt}\n\nYou are ${nameOf(slug)} in a working meeting chaired by راشد (Chief Orchestrator) with: ${participants.filter((p) => p !== slug).map(nameOf).join(", ")}. Contribute only from your specialty. Be concrete and evidence-based, reference the inputs, flag disagreements and risks explicitly, and keep it under 180 words. No greetings or filler. Respond in the language of the user's request.`,
+          system: `${agent.systemPrompt}\n\nYou are ${nameOf(slug)} in a working meeting chaired by راشد (Chief Orchestrator) with: ${participants.filter((p) => p !== slug).map(nameOf).join(", ")}. Contribute only from your specialty. Be concrete and evidence-based, reference the inputs, flag disagreements and risks explicitly, and keep it under 180 words. No greetings or filler. Respond in the language of the user's request.`,
           messages: [{
             role: "user",
             content: [
@@ -128,7 +131,7 @@ export async function runMeeting(m: MeetingInput): Promise<{ output: string; mee
            ON CONFLICT (meeting_id, agent_slug, round, kind) DO UPDATE SET content=EXCLUDED.content RETURNING id`,
           [meetingId, m.workspaceId, slug, round, content],
         );
-        await emitEvent({ workspaceId: m.workspaceId, agent: slug, type: "meeting_message", taskId: m.taskId, stepId: m.stepId, meetingId, zone: "meeting_room", summary: content.replace(/\s+/g, " ").slice(0, 160), payload: { messageId: row!.id, round, content: content.slice(0, 600) } }, { refresh: false });
+        await emitEvent({ workspaceId: m.workspaceId, agent: slug, type: "meeting_message", taskId: m.taskId, stepId: m.stepId, meetingId, zone: room, summary: content.replace(/\s+/g, " ").slice(0, 160), payload: { messageId: row!.id, round, content: content.slice(0, 600) } }, { refresh: false });
       }
     }
 
@@ -152,13 +155,13 @@ export async function runMeeting(m: MeetingInput): Promise<{ output: string; mee
        ON CONFLICT (meeting_id, agent_slug, round, kind) DO UPDATE SET content=EXCLUDED.content RETURNING id`,
       [meetingId, m.workspaceId, CHAIR, MEETING_ROUNDS + 1, summary],
     );
-    await emitEvent({ workspaceId: m.workspaceId, agent: CHAIR, type: "meeting_message", taskId: m.taskId, stepId: m.stepId, meetingId, zone: "meeting_room", summary: summary.slice(0, 160), payload: { messageId: sumRow!.id, round: MEETING_ROUNDS + 1, content: summary.slice(0, 600), kind: "summary" } }, { refresh: false });
+    await emitEvent({ workspaceId: m.workspaceId, agent: CHAIR, type: "meeting_message", taskId: m.taskId, stepId: m.stepId, meetingId, zone: room, summary: summary.slice(0, 160), payload: { messageId: sumRow!.id, round: MEETING_ROUNDS + 1, content: summary.slice(0, 600), kind: "summary" } }, { refresh: false });
     await query(
       `UPDATE meetings SET status='completed', summary=$2, decisions=$3, action_items=$4, completed_at=now() WHERE id=$1`,
       [meetingId, summary, JSON.stringify(decisions), JSON.stringify(actionItems)],
     );
     await query("UPDATE meeting_participants SET left_at=now() WHERE meeting_id=$1 AND left_at IS NULL", [meetingId]);
-    await emitEvent({ workspaceId: m.workspaceId, agent: CHAIR, type: "meeting_ended", taskId: m.taskId, stepId: m.stepId, meetingId, zone: "meeting_room", summary: m.title, payload: { decisions: decisions.length, actionItems: actionItems.length } });
+    await emitEvent({ workspaceId: m.workspaceId, agent: CHAIR, type: "meeting_ended", taskId: m.taskId, stepId: m.stepId, meetingId, zone: room, summary: m.title, payload: { decisions: decisions.length, actionItems: actionItems.length } });
 
     const output = [
       `## Meeting outcome: ${m.title}`,
