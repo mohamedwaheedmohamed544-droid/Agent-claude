@@ -156,6 +156,7 @@ Decide the mode:
 Planning rules:
 - Each step has a unique short key (snake_case), the agent slug, a concise title, a self-contained instruction (the agent cannot see the chat), the expected output, and depends_on (keys of steps whose output it needs).
 - Steps without dependencies run in parallel. Avoid unnecessary dependencies.
+- Use kind "meeting" (with 2–4 specialist "participants") ONLY when the work genuinely needs specialists to review or reconcile each other's findings together before the next step (e.g. reviewing research before a proposal, reconciling analysis with positioning). The meeting is chaired by the Orchestrator, runs as real agent-to-agent discussion, and outputs decisions and action items. Put the meeting after the steps whose outputs it reviews (depends_on). For kind "agent" steps set participants to []; for meetings set agent to any participant (it is ignored).
 - Use "condition" only when a step should run only if an earlier result meets a criterion; otherwise null.
 - Never plan steps that bypass approvals. Sending/publishing/modifying actions are allowed only if the user asked for them; they will be gated by approval automatically.
 - The title field is a short (≤ 8 words) task title in the user's language.

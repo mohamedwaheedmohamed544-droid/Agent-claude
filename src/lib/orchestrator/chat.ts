@@ -3,7 +3,7 @@ import { badRequest, notFound } from "../errors";
 import { searchMemory } from "../memory/store";
 import { redactSecrets } from "../security/crypto";
 import { createTaskFromPlan, kickTask, activeAgentSlugs } from "./engine";
-import { planRequest, type Plan } from "./planner";
+import { planRequest, validatePlan, PlanValidationError, type Plan } from "./planner";
 
 export interface ChatInput {
   workspaceId: string;
@@ -12,6 +12,10 @@ export interface ChatInput {
   conversationId?: string | null;
   text: string;
   fileIds?: string[];
+  /** Assign directly to one specialist (office "Assign task"): skips planning, still runs through the engine. */
+  targetAgent?: string | null;
+  /** Ask the orchestrator to convene a meeting of these specialists about `text`. */
+  meetingParticipants?: string[] | null;
 }
 
 export interface MessageRow {
@@ -69,7 +73,16 @@ export async function handleChatMessage(input: ChatInput): Promise<{ conversatio
   const objective = attachments.length ? `${text}\n\n[Attached files: ${attachments.map((a) => `${a.filename} (id ${a.id})`).join(", ")}]` : text;
   let plan: Plan;
   try {
-    plan = await planRequest({
+    if (input.targetAgent || input.meetingParticipants?.length) {
+      if (input.targetAgent && !activeAgents.includes(input.targetAgent)) throw badRequest(`Agent ${input.targetAgent} is not available`);
+      const title = text.replace(/\s+/g, " ").slice(0, 80);
+      plan = validatePlan({
+        mode: "single", title, reply: null,
+        steps: [input.meetingParticipants?.length
+          ? { key: "meeting", kind: "meeting", agent: input.meetingParticipants[0], participants: input.meetingParticipants, title, instruction: objective, expected_output: "Decisions and action items", depends_on: [], condition: null }
+          : { key: "assigned", kind: "agent", agent: input.targetAgent!, participants: [], title, instruction: objective, expected_output: "Completed assignment", depends_on: [], condition: null }],
+      }, activeAgents);
+    } else plan = await planRequest({
       workspaceId: input.workspaceId, userId: input.userId, request: objective, history, attachments,
       memoryContext: memories.map((m) => m.content), activeAgents, locale: input.locale,
     });
@@ -79,6 +92,7 @@ export async function handleChatMessage(input: ChatInput): Promise<{ conversatio
       `INSERT INTO messages(conversation_id, workspace_id, role, content, agent_slug, metadata) VALUES ($1,$2,'assistant',$3,'orchestrator',$4) RETURNING id`,
       [conversationId, input.workspaceId, `I couldn't plan this request: ${redactSecrets(msg).slice(0, 300)}`, { kind: "error" }],
     );
+    if (e instanceof PlanValidationError) throw badRequest(e.message);
     throw e;
   }
 

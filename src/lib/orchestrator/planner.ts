@@ -10,6 +10,9 @@ export interface PlanStep {
   expected_output: string;
   depends_on: string[];
   condition: string | null;
+  /** "meeting" = real multi-agent meeting chaired by the orchestrator; `agent` is ignored for meetings. */
+  kind?: "agent" | "meeting";
+  participants?: string[];
 }
 
 export interface Plan {
@@ -32,10 +35,12 @@ export const PLAN_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["key", "agent", "title", "instruction", "expected_output", "depends_on", "condition"],
+        required: ["key", "kind", "agent", "participants", "title", "instruction", "expected_output", "depends_on", "condition"],
         properties: {
           key: { type: "string" },
+          kind: { type: "string", enum: ["agent", "meeting"] },
           agent: { type: "string", enum: AGENT_SLUGS },
+          participants: { type: "array", items: { type: "string", enum: AGENT_SLUGS } },
           title: { type: "string" },
           instruction: { type: "string" },
           expected_output: { type: "string" },
@@ -63,7 +68,17 @@ export function validatePlan(plan: Plan, activeAgents: string[] = AGENT_SLUGS): 
     s.key = s.key.trim().replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40) || `step_${keys.size + 1}`;
     if (keys.has(s.key)) throw new PlanValidationError(`Duplicate step key ${s.key}`);
     keys.add(s.key);
-    if (!activeAgents.includes(s.agent)) throw new PlanValidationError(`Unknown or inactive agent ${s.agent}`);
+    s.kind = s.kind === "meeting" ? "meeting" : "agent";
+    if (s.kind === "meeting") {
+      s.participants = [...new Set(s.participants ?? [])];
+      if (s.participants.length < 2 || s.participants.length > 4) throw new PlanValidationError(`Meeting ${s.key} needs 2–4 specialist participants`);
+      const bad = s.participants.find((p) => !activeAgents.includes(p));
+      if (bad) throw new PlanValidationError(`Unknown or inactive meeting participant ${bad}`);
+      s.agent = "orchestrator";
+    } else {
+      s.participants = [];
+      if (!activeAgents.includes(s.agent)) throw new PlanValidationError(`Unknown or inactive agent ${s.agent}`);
+    }
     if (!s.instruction?.trim()) throw new PlanValidationError(`Step ${s.key} has no instruction`);
   }
   for (const s of plan.steps) {

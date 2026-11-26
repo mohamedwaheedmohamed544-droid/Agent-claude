@@ -30,7 +30,7 @@ let callCounter = 0;
 function planFor(objective: string) {
   const o = objective.toLowerCase();
   const step = (key: string, agent: string, title: string, instruction: string, depends_on: string[] = []) => ({
-    key, agent, title, instruction, expected_output: `Output of ${title}`, depends_on, condition: null as string | null,
+    key, kind: "agent", agent, participants: [] as string[], title, instruction, expected_output: `Output of ${title}`, depends_on, condition: null as string | null,
   });
   if (/^(hi|hello|hey|مرحبا|السلام)\b/.test(o.trim()) && o.length < 40) {
     return { mode: "direct", title: "Greeting", reply: "[mock] Hello! I'm Nexus AI. How can I help today?", steps: [] };
@@ -43,6 +43,18 @@ function planFor(objective: string) {
   }
   if (o.includes("[fail]")) {
     return { mode: "single", title: "Failing task", reply: null, steps: [step("s1", "research", "Failing step", objective)] };
+  }
+  if (o.includes("[meeting]") || o.includes("comparison report")) {
+    return {
+      mode: "multi", title: "Competitor comparison", reply: null,
+      steps: [
+        step("research", "research", "Research the competitors", `Search the knowledge base and web for: ${objective}`),
+        { key: "review", kind: "meeting", agent: "research", participants: ["research", "documents"], title: "Review research findings",
+          instruction: "Review the research findings; agree the comparison criteria; decide the report structure", expected_output: "Decisions and action items",
+          depends_on: ["research"], condition: null as string | null },
+        step("write", "writing", "Write the comparison report", `Write a document report based on prior findings for: ${objective}`, ["review"]),
+      ],
+    };
   }
   if (o.includes("[multi]") || (o.includes("research") && (o.includes("write") || o.includes("report")))) {
     return {
@@ -81,6 +93,17 @@ export function mockChat(req: ChatRequest): { content: string | null; toolCalls:
     return done(JSON.stringify(planFor((m?.[1] ?? userText).trim())));
   }
   if (req.jsonSchema?.name === "step_condition") return done(JSON.stringify({ proceed: true, reason: "mock: condition satisfied" }));
+  if (req.jsonSchema?.name === "meeting_summary") {
+    return done(JSON.stringify({
+      summary: "[mock] The team reviewed the findings and agreed the comparison structure.",
+      decisions: ["[mock] Compare competitors on pricing, features and market share"],
+      action_items: [{ owner: "documents", item: "[mock] Prepare the comparison matrix" }],
+    }));
+  }
+  if (req.ctx.purpose === "meeting_statement") {
+    const round = userText.match(/Round (\d+) of/)?.[1] ?? "1";
+    return done(`[mock] ${req.ctx.agentSlug} contribution, round ${round}: findings reviewed against the agenda.`);
+  }
   if (req.jsonSchema?.name === "memory_extraction") return done(JSON.stringify({ memories: [] }));
   if (req.jsonSchema) return done("{}");
 

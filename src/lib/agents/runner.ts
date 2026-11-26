@@ -10,6 +10,9 @@ import { executeTool, ApprovalRequiredError } from "../tools/executor";
 import { toolSpecs } from "../tools/registry";
 import { SAFETY_POLICY } from "./definitions";
 import type { AgentConfig } from "./store";
+import { emitEvent } from "../office/events";
+import { deskZoneOf } from "../office/profiles";
+import { getTool } from "../tools/registry";
 
 const MAX_ROUNDS = 8;
 
@@ -139,6 +142,10 @@ export async function runAgentStep(agent: AgentConfig, s: StepContext, checkpoin
         const outcome = await executeTool(call.name, call.input ?? {}, toolCtx, agent.allowedTools);
         if (outcome.status === "ok") harvest(cp, call.name, outcome.output);
         cp.toolCalls.push({ name: call.name, status: outcome.status });
+        await emitEvent({
+          workspaceId: s.workspaceId, agent: agent.slug, type: "tool_used", taskId: s.taskId, stepId: s.stepId, zone: deskZoneOf(agent.slug),
+          summary: `${call.name}: ${outcome.status}`, payload: { tool: call.name, status: outcome.status, riskLevel: getTool(call.name)?.riskLevel ?? null },
+        }, { refresh: false });
         const payload = outcome.status === "ok" ? { ok: true, result: outcome.output } : { ok: false, status: outcome.status, error: outcome.error };
         cp.pendingResults.push({
           type: "tool_result", tool_use_id: call.id,

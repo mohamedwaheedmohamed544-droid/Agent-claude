@@ -11,6 +11,9 @@ import { randomToken, redactSecrets } from "../security/crypto";
 import { wrapUntrusted } from "../security/untrusted";
 import { truncateToTokens } from "../ai/models";
 import type { Plan } from "./planner";
+import { emitEvent, refreshPresence, sendAgentMessage } from "../office/events";
+import { runMeeting } from "../office/meetings";
+import { deskZoneOf } from "../office/profiles";
 
 export type TaskStatus = "draft" | "planned" | "running" | "waiting_approval" | "paused" | "completed" | "failed" | "cancelled";
 export type StepStatus = "pending" | "running" | "waiting_approval" | "completed" | "failed" | "skipped" | "cancelled";
@@ -26,6 +29,7 @@ interface StepRow {
   id: string; step_key: string; position: number; agent_slug: string; title: string; input: string; expected_output: string | null;
   condition: string | null; status: StepStatus; output: string | null; output_meta: StepResult["meta"] | Record<string, never>;
   attempts: number; max_attempts: number; next_attempt_at: string | null; checkpoint: Checkpoint | null; deps: string[];
+  kind: "agent" | "meeting"; participants: string[];
 }
 
 // ───────────────────────── Creation ─────────────────────────
@@ -43,9 +47,10 @@ export async function createTaskFromPlan(p: {
     const ids = new Map<string, string>();
     for (const [i, s] of p.plan.steps.entries()) {
       const row = await queryOne<{ id: string }>(
-        `INSERT INTO task_steps(task_id, workspace_id, step_key, position, agent_slug, title, input, expected_output, condition)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
-        [t!.id, p.workspaceId, s.key, i, s.agent, s.title.slice(0, 300), s.instruction, s.expected_output, s.condition], c,
+        `INSERT INTO task_steps(task_id, workspace_id, step_key, position, agent_slug, title, input, expected_output, condition, kind, participants)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+        [t!.id, p.workspaceId, s.key, i, s.kind === "meeting" ? "orchestrator" : s.agent, s.title.slice(0, 300), s.instruction, s.expected_output, s.condition,
+          s.kind === "meeting" ? "meeting" : "agent", s.kind === "meeting" ? s.participants ?? [] : []], c,
       );
       ids.set(s.key, row!.id);
     }
@@ -57,6 +62,7 @@ export async function createTaskFromPlan(p: {
     return t!.id;
   });
   await audit({ workspaceId: p.workspaceId, userId: p.userId, actorType: "agent", actor: "orchestrator", action: "task.created", targetType: "task", targetId: taskId, metadata: { steps: p.plan.steps.length, agents: p.plan.steps.map((s) => s.agent) } });
+  await emitEvent({ workspaceId: p.workspaceId, agent: "orchestrator", type: "task_received", taskId, zone: "executive", summary: (p.plan.title || p.objective).slice(0, 160), payload: { steps: p.plan.steps.length } });
   return taskId;
 }
 
@@ -106,7 +112,7 @@ async function setTaskStatus(taskId: string, status: TaskStatus, extra: { result
 async function loadSteps(taskId: string): Promise<StepRow[]> {
   return query<StepRow>(
     `SELECT s.id, s.step_key, s.position, s.agent_slug, s.title, s.input, s.expected_output, s.condition, s.status, s.output, s.output_meta,
-            s.attempts, s.max_attempts, s.next_attempt_at, s.checkpoint,
+            s.attempts, s.max_attempts, s.next_attempt_at, s.checkpoint, s.kind, s.participants,
             COALESCE(array_agg(d.depends_on_step_id) FILTER (WHERE d.depends_on_step_id IS NOT NULL), '{}') AS deps
        FROM task_steps s LEFT JOIN task_dependencies d ON d.step_id = s.id
       WHERE s.task_id=$1 GROUP BY s.id ORDER BY s.position`,
@@ -148,8 +154,23 @@ async function runStep(task: TaskRow, step: StepRow, all: StepRow[]): Promise<vo
         return;
       }
     }
+    if (step.kind === "meeting") {
+      const { output, meetingId } = await runMeeting({
+        workspaceId: task.workspace_id, userId: task.created_by, taskId: task.id, stepId: step.id, objective: task.objective,
+        title: step.title, instruction: step.input, participants: step.participants,
+        inputs: deps.map((d) => ({ key: d.step_key, agent: d.agent_slug, title: d.title, output: d.output ?? "" })),
+      });
+      await query(
+        `UPDATE task_steps SET status='completed', output=$2, output_meta=$3, error=NULL, completed_at=now(), updated_at=now() WHERE id=$1 AND status='running'`,
+        [step.id, output, { sources: [], artifacts: [], toolCalls: [], meetingId }],
+      );
+      await audit({ workspaceId: task.workspace_id, actorType: "agent", actor: "orchestrator", action: "meeting.completed", targetType: "meeting", targetId: meetingId, metadata: { taskId: task.id, participants: step.participants } });
+      await announceCompletion(task, step, all, output);
+      return;
+    }
     const agent = await getAgent(task.workspace_id, step.agent_slug);
     if (!agent || !agent.active) throw new AppError(400, "agent_unavailable", `Agent ${step.agent_slug} is not available`);
+    await announceDelegation(task, step);
     const result = await runAgentStep(agent, {
       workspaceId: task.workspace_id, userId: task.created_by, taskId: task.id, stepId: step.id, conversationId: task.conversation_id,
       objective: task.objective, title: step.title, instruction: step.input, expectedOutput: step.expected_output,
@@ -160,9 +181,11 @@ async function runStep(task: TaskRow, step: StepRow, all: StepRow[]): Promise<vo
       [step.id, result.output, result.meta],
     );
     await audit({ workspaceId: task.workspace_id, actorType: "agent", actor: step.agent_slug, action: "step.completed", targetType: "task_step", targetId: step.id, metadata: { taskId: task.id, tools: result.meta.toolCalls.length } });
+    await announceCompletion(task, step, all, result.output);
   } catch (e) {
     if (e instanceof ApprovalRequiredError) {
       await query("UPDATE task_steps SET status='waiting_approval', updated_at=now() WHERE id=$1", [step.id]);
+      await emitEvent({ workspaceId: task.workspace_id, agent: step.agent_slug, type: "waiting_approval", taskId: task.id, stepId: step.id, zone: deskZoneOf(step.agent_slug), summary: `Waiting for approval: ${e.toolName}`, payload: { approvalId: e.approvalId, tool: e.toolName } });
       return;
     }
     if (e instanceof EmergencyStopError || (e instanceof AppError && e.code === "emergency_stop")) {
@@ -183,7 +206,57 @@ async function runStep(task: TaskRow, step: StepRow, all: StepRow[]): Promise<vo
         [step.id, { message, attempt: attempts, recoverable: false }],
       );
       await audit({ workspaceId: task.workspace_id, actorType: "agent", actor: step.agent_slug, action: "step.failed", targetType: "task_step", targetId: step.id, metadata: { taskId: task.id, error: message } });
+      const failedAgents = step.kind === "meeting" ? step.participants : [step.agent_slug];
+      for (const a of failedAgents) {
+        await emitEvent({ workspaceId: task.workspace_id, agent: a, type: "step_failed", taskId: task.id, stepId: step.id, zone: deskZoneOf(a), summary: `${step.title}: ${message.slice(0, 200)}` }, { refresh: false });
+      }
+      await refreshPresence(task.workspace_id).catch(() => {});
     }
+  }
+}
+
+/** Orchestrator → specialist delegation (once per step, not repeated on resume after an approval). */
+async function announceDelegation(task: TaskRow, step: StepRow) {
+  try {
+    const already = await queryOne("SELECT 1 FROM agent_messages WHERE step_id=$1 AND kind='delegation'", [step.id]);
+    if (already) {
+      await refreshPresence(task.workspace_id);
+      return;
+    }
+    const messageId = await sendAgentMessage({
+      workspaceId: task.workspace_id, from: "orchestrator", to: step.agent_slug, kind: "delegation", taskId: task.id, stepId: step.id,
+      content: `${step.title}\n${step.input}`,
+    });
+    await emitEvent({ workspaceId: task.workspace_id, agent: "orchestrator", type: "delegated", relatedAgent: step.agent_slug, taskId: task.id, stepId: step.id, zone: deskZoneOf(step.agent_slug), summary: step.title, payload: { messageId } }, { refresh: false });
+    await emitEvent({ workspaceId: task.workspace_id, agent: step.agent_slug, type: "step_started", taskId: task.id, stepId: step.id, zone: deskZoneOf(step.agent_slug), summary: step.title });
+  } catch (e) {
+    console.error("[office] delegation event failed:", (e as Error).message);
+  }
+}
+
+/** Real hand-off of a step's output: to each dependent step's agent(s), and the result to the orchestrator. */
+async function announceCompletion(task: TaskRow, step: StepRow, all: StepRow[], output: string) {
+  try {
+    const sender = step.agent_slug;
+    const recipients = new Set<string>();
+    for (const s of all.filter((x) => x.deps.includes(step.id))) {
+      for (const r of s.kind === "meeting" ? s.participants : [s.agent_slug]) if (r !== sender) recipients.add(r);
+    }
+    const brief = output.length > 1500 ? `${output.slice(0, 1500)}…` : output;
+    for (const r of recipients) {
+      if (r === "orchestrator") continue;
+      await sendAgentMessage({ workspaceId: task.workspace_id, from: sender, to: r, kind: "handoff", taskId: task.id, stepId: step.id, content: brief });
+    }
+    if (sender !== "orchestrator") {
+      await sendAgentMessage({ workspaceId: task.workspace_id, from: sender, to: "orchestrator", kind: "result", taskId: task.id, stepId: step.id, content: brief });
+    }
+    const agents = step.kind === "meeting" ? step.participants : [sender];
+    for (const a of agents) {
+      await emitEvent({ workspaceId: task.workspace_id, agent: a, type: "step_completed", taskId: task.id, stepId: step.id, zone: deskZoneOf(a), summary: step.title }, { refresh: false });
+    }
+    await refreshPresence(task.workspace_id);
+  } catch (e) {
+    console.error("[office] completion event failed:", (e as Error).message);
   }
 }
 
@@ -221,6 +294,7 @@ async function consolidate(task: TaskRow, steps: StepRow[]): Promise<void> {
     await query("UPDATE conversations SET updated_at=now() WHERE id=$1", [task.conversation_id]);
   }
   await audit({ workspaceId: task.workspace_id, actorType: "agent", actor: "orchestrator", action: "task.completed", targetType: "task", targetId: task.id, metadata: { summary } });
+  await emitEvent({ workspaceId: task.workspace_id, agent: "orchestrator", type: "task_completed", taskId: task.id, zone: "executive", summary: task.title, payload: { agents, artifacts: artifacts.length } });
 }
 
 async function failTask(task: TaskRow, steps: StepRow[]) {
@@ -235,6 +309,7 @@ async function failTask(task: TaskRow, steps: StepRow[]) {
     );
   }
   await audit({ workspaceId: task.workspace_id, actorType: "agent", actor: "orchestrator", action: "task.failed", targetType: "task", targetId: task.id, metadata: { reason } });
+  await emitEvent({ workspaceId: task.workspace_id, agent: "orchestrator", type: "task_failed", taskId: task.id, zone: "executive", summary: `${task.title}: ${reason.slice(0, 200)}` });
 }
 
 export type RunOutcome = "completed" | "failed" | "cancelled" | "paused" | "waiting_approval" | "yielded" | "locked";
@@ -261,11 +336,14 @@ export async function runTask(taskId: string, opts: { budgetMs?: number } = {}):
         await setTaskStatus(taskId, "cancelled");
         await postCancelledMessage(taskId);
         await audit({ workspaceId: task.workspace_id, actorType: "system", action: "task.cancelled", targetType: "task", targetId: taskId });
+        await query("UPDATE meetings SET status='cancelled', completed_at=now() WHERE task_id=$1 AND status='in_progress'", [taskId]);
+        await refreshPresence(task.workspace_id).catch(() => {});
         return "cancelled";
       }
       const settings = await getWorkspaceSettings(task.workspace_id);
       if (task.pause_requested || settings.emergencyStop) {
         await setTaskStatus(taskId, "paused");
+        await refreshPresence(task.workspace_id).catch(() => {});
         return "paused";
       }
       const steps = await loadSteps(taskId);
@@ -372,6 +450,8 @@ export async function controlTask(workspaceId: string, taskId: string, action: "
     kickTask(taskId);
   }
   await audit({ workspaceId, userId, actorType: "user", action: `task.${action}`, targetType: "task", targetId: taskId });
+  if (next === "cancelled") await query("UPDATE meetings SET status='cancelled', completed_at=now() WHERE task_id=$1 AND status='in_progress'", [taskId]);
+  await refreshPresence(workspaceId).catch(() => {});
   return next;
 }
 
@@ -384,6 +464,7 @@ export async function onApprovalDecided(workspaceId: string, approvalId: string)
     `UPDATE tasks SET status='running', updated_at=now() WHERE id=$1 AND status='waiting_approval' RETURNING status`, [a.task_id],
   );
   if (t) kickTask(a.task_id);
+  await refreshPresence(workspaceId).catch(() => {});
 }
 
 export async function activeAgentSlugs(workspaceId: string): Promise<string[]> {
