@@ -28,7 +28,7 @@ describe("Nexus Office — real activity integration", () => {
 
     // Orchestrator presence reflects the received task before execution.
     let presence = await getPresence(u.workspaceId);
-    expect(presence.find((p) => p.agent === "orchestrator")!.status).toBe("working");
+    expect(presence.find((p) => p.agent === "orchestrator")!.status).toBe("thinking"); // task received, being planned
 
     // While the step is running, باحث is shown working at the research desk (derived from real step state).
     const step = await queryOne<{ id: string }>("SELECT id FROM task_steps WHERE task_id=$1", [r.taskId]);
@@ -122,7 +122,7 @@ describe("Nexus Office — real activity integration", () => {
     const m = await handleChatMessage({ workspaceId: u.workspaceId, userId: u.userId, locale: "en", text: "Research the market and write a report" });
     await refreshPresence(u.workspaceId);
     presence = await getPresence(u.workspaceId);
-    expect(presence.find((p) => p.agent === "writing")).toMatchObject({ status: "waiting", waitingFor: expect.stringMatching(/research|marketing/) });
+    expect(presence.find((p) => p.agent === "writing")).toMatchObject({ status: "collaborating", waitingFor: expect.stringMatching(/research|marketing/) });
     expect(m.taskId).toBeTruthy();
 
     await updateWorkspaceAgent(u.workspaceId, "marketing", u.userId, { active: false });

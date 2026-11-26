@@ -1,6 +1,7 @@
 import { query, queryOne } from "../db";
 import { redactSecrets } from "../security/crypto";
-import { AGENT_PROFILES, OFFICE_AGENT_SLUGS, deskZoneOf } from "./profiles";
+import { AGENT_PROFILES } from "./profiles";
+import { getDirectory } from "./directory";
 import type { ActivityEvent, ActivityEventType, AgentMessage, AgentPresence, AgentStatus, OfficeZone } from "./types";
 
 /**
@@ -75,8 +76,8 @@ export async function refreshPresence(workspaceId: string): Promise<void> {
     query<{ slug: string; active: boolean }>(
       `SELECT DISTINCT ON (slug) slug, active FROM agents WHERE workspace_id=$1 OR workspace_id IS NULL ORDER BY slug, (workspace_id IS NULL)`, [workspaceId],
     ).then((r) => new Set(r.filter((x) => !x.active).map((x) => x.slug))),
-    query<{ agent_slug: string; meeting_id: string; task_id: string | null; objective: string }>(
-      `SELECT mp.agent_slug, m.id AS meeting_id, m.task_id, m.objective FROM meeting_participants mp JOIN meetings m ON m.id=mp.meeting_id
+    query<{ agent_slug: string; meeting_id: string; task_id: string | null; objective: string; room_key: string }>(
+      `SELECT mp.agent_slug, m.id AS meeting_id, m.task_id, m.objective, m.room_key FROM meeting_participants mp JOIN meetings m ON m.id=mp.meeting_id
         WHERE m.workspace_id=$1 AND m.status='in_progress' AND mp.left_at IS NULL`, [workspaceId]),
     query<{ agent_slug: string; id: string; title: string; task_id: string }>(
       `SELECT s.agent_slug, s.id, s.title, s.task_id FROM task_steps s WHERE s.workspace_id=$1 AND s.status='running' AND s.kind='agent'
@@ -98,29 +99,34 @@ export async function refreshPresence(workspaceId: string): Promise<void> {
       `SELECT id, title, status FROM tasks WHERE workspace_id=$1 AND status IN ('planned','running','waiting_approval') ORDER BY updated_at DESC`, [workspaceId]),
   ]);
 
+  const directory = (await getDirectory(workspaceId)).filter((d) => d.lifecycle !== "archived");
   const computed = new Map<string, Computed>();
-  for (const slug of OFFICE_AGENT_SLUGS) {
-    const base: Computed = { status: "idle", zone: deskZoneOf(slug), activity: null, taskId: null, stepId: null, meetingId: null, waitingFor: null };
+  for (const entry of directory) {
+    const slug = entry.slug;
+    const base: Computed = { status: "idle", zone: entry.departmentKey ?? "lounge", activity: null, taskId: null, stepId: null, meetingId: null, waitingFor: null };
     const meeting = meetingRows.find((r) => r.agent_slug === slug);
     const run = running.find((r) => r.agent_slug === slug);
     const appr = waitingApproval.find((r) => r.agent_slug === slug);
     const blk = blocked.find((r) => r.agent_slug === slug);
     const fail = failed.find((r) => r.agent_slug === slug);
     let c = base;
-    if (meeting) c = { ...base, status: "meeting", zone: "meeting_room", activity: meeting.objective, taskId: meeting.task_id, meetingId: meeting.meeting_id };
-    else if (slug === "orchestrator") {
-      const active = orchestratorTasks.find((t) => t.status !== "waiting_approval");
+    if (meeting) c = { ...base, status: "meeting", zone: meeting.room_key || "meeting_room", activity: meeting.objective, taskId: meeting.task_id, meetingId: meeting.meeting_id };
+    else if (entry.isOrchestrator) {
+      const active = orchestratorTasks.find((t) => t.status === "running");
+      const planning = orchestratorTasks.find((t) => t.status === "planned");
       const waiting = orchestratorTasks.find((t) => t.status === "waiting_approval");
       if (active) c = { ...base, status: "working", activity: active.title, taskId: active.id };
+      else if (planning) c = { ...base, status: "thinking", activity: planning.title, taskId: planning.id };
       else if (waiting) c = { ...base, status: "waiting", activity: waiting.title, taskId: waiting.id, waitingFor: "approval" };
     } else if (run) c = { ...base, status: "working", activity: run.title, taskId: run.task_id, stepId: run.id };
     else if (appr) c = { ...base, status: "waiting", activity: appr.title, taskId: appr.task_id, stepId: appr.id, waitingFor: "approval" };
-    else if (blk) c = { ...base, status: "waiting", activity: blk.title, taskId: blk.task_id, stepId: blk.id, waitingFor: blk.waiting_for };
+    else if (blk) c = { ...base, status: "collaborating", activity: blk.title, taskId: blk.task_id, stepId: blk.id, waitingFor: blk.waiting_for };
     else if (fail) c = { ...base, status: "error", activity: fail.title, taskId: fail.task_id, stepId: fail.id };
-    if (inactive.has(slug) && c.status !== "meeting" && c.status !== "working") c = { ...c, status: "paused" };
+    if ((entry.lifecycle !== "active" || inactive.has(slug)) && c.status !== "meeting" && c.status !== "working") c = { ...c, status: "paused" };
     computed.set(slug, c);
   }
 
+  await query("DELETE FROM agent_presence WHERE workspace_id=$1 AND NOT (agent_slug = ANY($2))", [workspaceId, [...computed.keys()]]);
   const previous = new Map((await query<{ agent_slug: string; status: string }>(
     "SELECT agent_slug, status FROM agent_presence WHERE workspace_id=$1", [workspaceId],
   )).map((r) => [r.agent_slug, r.status]));
@@ -149,14 +155,15 @@ export async function getPresence(workspaceId: string): Promise<AgentPresence[]>
   let rows = await query<AgentPresence>(
     `SELECT ${PRESENCE_COLS} FROM agent_presence p LEFT JOIN tasks t ON t.id=p.task_id WHERE p.workspace_id=$1`, [workspaceId],
   );
-  if (rows.length < OFFICE_AGENT_SLUGS.length) {
+  const dirCount = (await getDirectory(workspaceId)).filter((d) => d.lifecycle !== "archived").length;
+  if (rows.length !== dirCount) {
     await refreshPresence(workspaceId);
     rows = await query<AgentPresence>(
       `SELECT ${PRESENCE_COLS} FROM agent_presence p LEFT JOIN tasks t ON t.id=p.task_id WHERE p.workspace_id=$1`, [workspaceId],
     );
   }
-  const order = OFFICE_AGENT_SLUGS;
-  return rows.sort((a, b) => order.indexOf(a.agent) - order.indexOf(b.agent));
+  const order = (await getDirectory(workspaceId)).map((d) => d.slug);
+  return rows.filter((r) => order.includes(r.agent)).sort((a, b) => order.indexOf(a.agent) - order.indexOf(b.agent));
 }
 
 export async function eventsAfter(workspaceId: string, afterId: string | null, limit = 200): Promise<ActivityEvent[]> {

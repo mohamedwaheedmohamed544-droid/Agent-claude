@@ -8,10 +8,8 @@ import { wrapUntrusted } from "../security/untrusted";
 import { redactSecrets } from "../security/crypto";
 import { executeTool, ApprovalRequiredError } from "../tools/executor";
 import { toolSpecs } from "../tools/registry";
-import { SAFETY_POLICY } from "./definitions";
 import type { AgentConfig } from "./store";
 import { emitEvent } from "../office/events";
-import { deskZoneOf } from "../office/profiles";
 import { getTool } from "../tools/registry";
 
 const MAX_ROUNDS = 8;
@@ -62,8 +60,13 @@ async function buildInitialCheckpoint(agent: AgentConfig, s: StepContext): Promi
   const ctx = { userId: s.userId, taskId: s.taskId, agentSlug: agent.slug };
   const probe = `${s.title}\n${s.instruction}`.slice(0, 1000);
   const [memories, hits] = await Promise.all([
-    searchMemory(s.workspaceId, s.userId, probe, { limit: 5, taskId: s.taskId }).catch(() => []),
-    agent.allowedTools.includes("knowledge_search")
+    agent.config.ai.memory.useWorkspaceMemory || agent.config.ai.memory.useAgentMemory
+      ? searchMemory(s.workspaceId, s.userId, probe, {
+          limit: 5, taskId: s.taskId, agentSlug: agent.slug, includeWorkspace: agent.config.ai.memory.useWorkspaceMemory,
+          includeOwnAgent: agent.config.ai.memory.useAgentMemory, includeOtherAgents: agent.permissions.memoryAccess === "shared",
+        }).catch(() => [])
+      : Promise.resolve([]),
+    agent.config.ai.memory.useKnowledgeBase && agent.allowedTools.includes("knowledge_search")
       ? searchKnowledge(s.workspaceId, probe, ctx, { limit: 4, minScore: 0.35 }).catch(() => [])
       : Promise.resolve([]),
   ]);
@@ -74,7 +77,7 @@ async function buildInitialCheckpoint(agent: AgentConfig, s: StepContext): Promi
     ? `\n\nPotentially relevant excerpts from workspace documents (use knowledge_search/read_file for more):\n${hits.map((h) => wrapUntrusted(`document:${h.filename}#${h.chunkIndex}`, truncateToTokens(h.content, 600))).join("\n")}`
     : "";
   // Stable part first (cacheable), per-step context last.
-  const system = `${SAFETY_POLICY}\n\n${agent.systemPrompt}\n\nToday's date: ${new Date().toISOString().slice(0, 10)}.${memoryBlock}${ragBlock}`;
+  const system = `${agent.systemPrompt}\n\nToday's date: ${new Date().toISOString().slice(0, 10)}.${memoryBlock}${ragBlock}`;
 
   const deps = s.dependencies.map((d) =>
     wrapUntrusted(`agent:${d.agent} step:${d.key} (${d.title})`, truncateToTokens(d.output, Math.floor(24_000 / Math.max(1, s.dependencies.length)))),
@@ -139,11 +142,14 @@ export async function runAgentStep(agent: AgentConfig, s: StepContext, checkpoin
     for (const call of uses) {
       if (done.has(call.id)) continue;
       try {
-        const outcome = await executeTool(call.name, call.input ?? {}, toolCtx, agent.allowedTools);
+        const outcome = await executeTool(call.name, call.input ?? {}, toolCtx, agent.allowedTools, {
+          alwaysApproveModify: agent.permissions.alwaysApproveModify, maxRiskLevel: agent.permissions.maxRiskLevel,
+          restrictedCategories: agent.permissions.restrictedCategories, memoryAccess: agent.permissions.memoryAccess,
+        });
         if (outcome.status === "ok") harvest(cp, call.name, outcome.output);
         cp.toolCalls.push({ name: call.name, status: outcome.status });
         await emitEvent({
-          workspaceId: s.workspaceId, agent: agent.slug, type: "tool_used", taskId: s.taskId, stepId: s.stepId, zone: deskZoneOf(agent.slug),
+          workspaceId: s.workspaceId, agent: agent.slug, type: "tool_used", taskId: s.taskId, stepId: s.stepId, zone: agent.departmentKey,
           summary: `${call.name}: ${outcome.status}`, payload: { tool: call.name, status: outcome.status, riskLevel: getTool(call.name)?.riskLevel ?? null },
         }, { refresh: false });
         const payload = outcome.status === "ok" ? { ok: true, result: outcome.output } : { ok: false, status: outcome.status, error: outcome.error };

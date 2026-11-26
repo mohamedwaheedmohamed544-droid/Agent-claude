@@ -1,24 +1,25 @@
-import type { AgentProfile, AgentStatus, OfficeZone } from "@/lib/office/types";
+import type { AgentStatus } from "@/lib/office/types";
+
+type NamedAgent = { nameAr: string; nameEn: string; titleAr: string; titleEn: string };
 
 export const STATUS_TONE: Record<AgentStatus, "neutral" | "accent" | "warning" | "info" | "danger"> = {
-  idle: "neutral", working: "accent", waiting: "warning", meeting: "info", error: "danger", paused: "neutral",
+  idle: "neutral", working: "accent", thinking: "accent", collaborating: "info", waiting: "warning", meeting: "info", error: "danger", paused: "neutral",
 };
 
 export const STATUS_DOT: Record<AgentStatus, string> = {
-  idle: "#9ca3af", working: "#6366f1", waiting: "#f59e0b", meeting: "#8b5cf6", error: "#ef4444", paused: "#6b7280",
+  idle: "#9ca3af", working: "#6366f1", thinking: "#818cf8", collaborating: "#0ea5e9", waiting: "#f59e0b", meeting: "#8b5cf6", error: "#ef4444", paused: "#6b7280",
 };
 
-export function displayName(p: AgentProfile | undefined, locale: "en" | "ar", slug?: string): string {
+export function displayName(p: Pick<NamedAgent, "nameAr" | "nameEn"> | undefined, locale: "en" | "ar", slug?: string): string {
   if (!p) return slug ?? "";
   return locale === "ar" ? p.nameAr : `${p.nameAr} · ${p.nameEn}`;
 }
 
-export function displayTitle(p: AgentProfile | undefined, locale: "en" | "ar"): string {
+export function displayTitle(p: Pick<NamedAgent, "titleAr" | "titleEn"> | undefined, locale: "en" | "ar"): string {
   if (!p) return "";
   return locale === "ar" ? p.titleAr : p.titleEn;
 }
 
-export const ZONES: OfficeZone[] = ["executive", "research", "bizdev", "documents", "writing", "analytics", "operations", "marketing", "meeting_room", "lounge"];
 
 /** Lightweight, optional browser TTS for meeting messages (no external dependency). */
 export function speak(text: string, agentIndex: number) {

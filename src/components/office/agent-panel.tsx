@@ -7,12 +7,12 @@ import { api } from "@/lib/client/api";
 import { useApi, timeAgo } from "@/lib/client/hooks";
 import { useApp } from "@/components/providers";
 import { Alert, Badge, Button, Dialog, Field, Spinner, StatusBadge, Textarea, cx } from "@/components/ui";
-import type { ActivityEvent, AgentMessage, AgentPresence, AgentProfile, MeetingSummary } from "@/lib/office/types";
-import { PROFILE_BY_SLUG } from "@/lib/office/profiles";
+import type { ActivityEvent, AgentMessage, AgentPresence, MeetingSummary } from "@/lib/office/types";
+import { useOfficeDirectory, zoneName, type DirectoryEntry } from "./office-directory";
 import { STATUS_DOT, STATUS_TONE, displayName, displayTitle } from "./office-utils";
 
 interface AgentDetail {
-  profile: AgentProfile;
+  profile: DirectoryEntry;
   presence: AgentPresence | null;
   events: ActivityEvent[];
   messages: AgentMessage[];
@@ -22,8 +22,8 @@ interface AgentDetail {
   config: { active: boolean; tier: string; tools: string[]; description: string; descriptionAr: string | null; capabilities: string[] } | null;
 }
 
-export function eventLine(e: ActivityEvent, t: (k: string, v?: Record<string, string | number>) => string, locale: "en" | "ar"): string {
-  const related = e.relatedAgent ? displayName(PROFILE_BY_SLUG.get(e.relatedAgent), locale, e.relatedAgent) : "";
+export function eventLine(e: ActivityEvent, t: (k: string, v?: Record<string, string | number>) => string, locale: "en" | "ar", get: (s: string) => DirectoryEntry | undefined): string {
+  const related = e.relatedAgent ? displayName(get(e.relatedAgent), locale, e.relatedAgent) : "";
   return t(`office.event.${e.type}`, { name: related });
 }
 
@@ -40,6 +40,7 @@ export function AgentPanel({ slug, presence, onClose, onMeeting, liveVersion }: 
   slug: string; presence: AgentPresence | undefined; onClose: () => void; onMeeting: (slug: string) => void; liveVersion: number;
 }) {
   const { t, locale, can } = useApp();
+  const dir = useOfficeDirectory();
   const { data, error, reload } = useApi<AgentDetail>(`/api/office/agents/${slug}`);
   const [assignOpen, setAssignOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -47,10 +48,10 @@ export function AgentPanel({ slug, presence, onClose, onMeeting, liveVersion }: 
   const [actionError, setActionError] = useState<string | null>(null);
   useEffect(() => { void reload(); }, [liveVersion, reload]);
 
-  const profile = PROFILE_BY_SLUG.get(slug);
+  const profile = dir.get(slug);
   if (!profile) return null;
   const p = presence ?? data?.presence ?? null;
-  const isOrchestrator = slug === "orchestrator";
+  const isOrchestrator = profile.isOrchestrator;
   const active = data?.config?.active ?? true;
 
   const togglePause = async () => {
@@ -87,14 +88,14 @@ export function AgentPanel({ slug, presence, onClose, onMeeting, liveVersion }: 
           </div>
           <div>
             <p className="text-[11.5px] text-fg-3">{t("office.panel.location")}</p>
-            <p className="mt-1 font-medium text-fg">{p ? t(`office.zone.${p.zone}`) : "—"}</p>
+            <p className="mt-1 font-medium text-fg">{p ? zoneName(dir.layout, p.zone, locale, t) : "—"}</p>
           </div>
           <div className="col-span-2">
             <p className="text-[11.5px] text-fg-3">{t("office.panel.currentTask")}</p>
             {p?.activity ? (
               <div className="mt-1">
                 <p className="font-medium text-fg" dir="auto">{p.activity}</p>
-                {p.waitingFor && <p className="mt-0.5 text-[12px] text-warning">{p.waitingFor === "approval" ? t("office.waitingFor.approval") : t("office.waitingFor.agent", { name: displayName(PROFILE_BY_SLUG.get(p.waitingFor), locale, p.waitingFor) })}</p>}
+                {p.waitingFor && <p className="mt-0.5 text-[12px] text-warning">{p.waitingFor === "approval" ? t("office.waitingFor.approval") : t("office.waitingFor.agent", { name: displayName(dir.get(p.waitingFor), locale, p.waitingFor) })}</p>}
                 {p.taskId && <Link href={`/tasks/${p.taskId}`} className="mt-1 inline-flex items-center gap-1 text-[12.5px] font-medium text-accent hover:underline">{p.taskTitle ?? t("action.view")}<ArrowUpRight className="size-3.5 rtl:-scale-x-100" /></Link>}
               </div>
             ) : <p className="mt-1 text-fg-3">{t("office.panel.noTask")}</p>}
@@ -141,7 +142,7 @@ export function AgentPanel({ slug, presence, onClose, onMeeting, liveVersion }: 
                 <li key={e.id} className="flex gap-2 text-[12.5px]">
                   <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-fg-3" />
                   <div className="min-w-0">
-                    <p className="text-fg-2">{eventLine(e, t, locale)}{e.summary && <span className="text-fg-3"> — <span dir="auto">{e.summary}</span></span>}</p>
+                    <p className="text-fg-2">{eventLine(e, t, locale, dir.get)}{e.summary && <span className="text-fg-3"> — <span dir="auto">{e.summary}</span></span>}</p>
                     <p className="text-[11px] text-fg-3">{timeAgo(e.createdAt, t)}</p>
                   </div>
                 </li>
@@ -157,9 +158,9 @@ export function AgentPanel({ slug, presence, onClose, onMeeting, liveVersion }: 
                 return (
                   <li key={m.id} className="rounded-xl border border-border px-3 py-2">
                     <p className="text-[11.5px] text-fg-3">
-                      <span className="font-medium" style={{ color: PROFILE_BY_SLUG.get(m.from)?.color }}>{PROFILE_BY_SLUG.get(m.from)?.nameAr ?? m.from}</span>
+                      <span className="font-medium" style={{ color: dir.get(m.from)?.color }}>{dir.get(m.from)?.nameAr ?? m.from}</span>
                       {" → "}
-                      <span className="font-medium" style={{ color: PROFILE_BY_SLUG.get(m.to)?.color }}>{PROFILE_BY_SLUG.get(m.to)?.nameAr ?? m.to}</span>
+                      <span className="font-medium" style={{ color: dir.get(m.to)?.color }}>{dir.get(m.to)?.nameAr ?? m.to}</span>
                       {" · "}{m.kind} · {timeAgo(m.createdAt, t)}
                     </p>
                     <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-[12.5px] text-fg-2" dir="auto">{m.content}</p>
@@ -207,7 +208,7 @@ export function AgentPanel({ slug, presence, onClose, onMeeting, liveVersion }: 
   );
 }
 
-function AssignDialog({ open, onClose, profile, onDone }: { open: boolean; onClose: () => void; profile: AgentProfile; onDone: () => void }) {
+function AssignDialog({ open, onClose, profile, onDone }: { open: boolean; onClose: () => void; profile: DirectoryEntry; onDone: () => void }) {
   const { t } = useApp();
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -229,7 +230,7 @@ function AssignDialog({ open, onClose, profile, onDone }: { open: boolean; onClo
   );
 }
 
-export function MeetingDialog({ open, onClose, initial, profiles }: { open: boolean; onClose: () => void; initial: string | null; profiles: AgentProfile[] }) {
+export function MeetingDialog({ open, onClose, initial, profiles }: { open: boolean; onClose: () => void; initial: string | null; profiles: DirectoryEntry[] }) {
   const { t, locale } = useApp();
   const [objective, setObjective] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
@@ -239,7 +240,7 @@ export function MeetingDialog({ open, onClose, initial, profiles }: { open: bool
   useEffect(() => {
     if (open) { setPicked(initial && initial !== "orchestrator" ? [initial] : []); setErr(null); setDone(false); }
   }, [open, initial]);
-  const specialists = profiles.filter((p) => p.slug !== "orchestrator");
+  const specialists = profiles.filter((p) => !p.isOrchestrator && p.lifecycle === "active");
   const toggle = (s: string) => setPicked((x) => (x.includes(s) ? x.filter((y) => y !== s) : x.length >= 4 ? x : [...x, s]));
   const submit = async () => {
     setBusy(true); setErr(null);

@@ -93,6 +93,28 @@ export function mockChat(req: ChatRequest): { content: string | null; toolCalls:
     return done(JSON.stringify(planFor((m?.[1] ?? userText).trim())));
   }
   if (req.jsonSchema?.name === "step_condition") return done(JSON.stringify({ proceed: true, reason: "mock: condition satisfied" }));
+  if (req.jsonSchema?.name === "agent_draft") {
+    const m = userText.match(/<request>([\s\S]*?)<\/request>/);
+    const request = (m?.[1] ?? userText).trim();
+    const lower = request.toLowerCase();
+    const name = request.match(/(?:called|named|اسمه|يسمى)\s+["“]?([^\s"”.,،]+)/i)?.[1] ?? "مساعد";
+    const skills = [
+      ...(lower.includes("web research") || lower.includes("research") ? ["web_research"] : []),
+      ...(lower.includes("document") ? ["document_analysis"] : []),
+      ...(lower.includes("tender") ? ["tender_analysis"] : []),
+    ];
+    return done(JSON.stringify({
+      nameAr: name, nameEn: lower.includes("procurement") ? "Procurement Researcher" : "Assistant Agent",
+      roleTitle: lower.includes("procurement") ? "Procurement Research Agent" : "Specialist Agent", roleTitleAr: "وكيل متخصص",
+      description: `[mock] Agent designed from: ${request.slice(0, 160)}`, descriptionAr: "[mock] وكيل مصمم من الطلب",
+      personality: "Precise and concise.", main: request.slice(0, 300), instructions: "[mock] Follow the request; report findings to the supervisor.",
+      expertise: ["Procurement research"], deliverables: ["Opportunity reports"], methodology: "Search, analyse, report.", successCriteria: ["Accurate, cited findings"],
+      skills, tools: ["web_search", "fetch_url", "knowledge_search", "list_files", "read_file", "create_document"], maxRiskLevel: 2,
+      departmentKey: "research", supervisor: "orchestrator", collaboratesWith: ["documents"], avatarPreset: "neutral_turtleneck", tier: "standard",
+      rationale: "[mock] Research + document skills match the request; drafting only (risk level 2).",
+      missingCapabilities: lower.includes("procurement") ? [{ capability: "Monitoring government procurement portals", skillKey: "procurement_monitoring", skillName: "Procurement monitoring", skillDescription: "Track government tender portals and summarise new opportunities.", requiredTools: ["web_search", "fetch_url"] }] : [],
+    }));
+  }
   if (req.jsonSchema?.name === "meeting_summary") {
     return done(JSON.stringify({
       summary: "[mock] The team reviewed the findings and agreed the comparison structure.",

@@ -4,7 +4,6 @@ import { isAiConfigured } from "@/lib/ai/llm";
 import { unavailable } from "@/lib/errors";
 import { listMeetings } from "@/lib/office/meetings";
 import { handleChatMessage } from "@/lib/orchestrator/chat";
-import { AGENT_SLUGS } from "@/lib/agents/definitions";
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
@@ -16,7 +15,7 @@ export const GET = workspaceRoute(async ({ req, workspaceId }) => {
 
 const Body = z.object({
   objective: z.string().trim().min(5).max(4000),
-  participants: z.array(z.enum(AGENT_SLUGS as [string, ...string[]])).min(2).max(4),
+  participants: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,60}$/)).min(2).max(4),
 });
 
 /**

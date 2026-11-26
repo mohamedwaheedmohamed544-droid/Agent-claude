@@ -6,12 +6,13 @@ import { ArrowUpRight, CheckCircle2, ListTodo, X } from "lucide-react";
 import { useApi, timeAgo } from "@/lib/client/hooks";
 import { useApp } from "@/components/providers";
 import { Badge, Spinner, StatusBadge } from "@/components/ui";
-import { PROFILE_BY_SLUG } from "@/lib/office/profiles";
+import { useOfficeDirectory } from "./office-directory";
 import type { ActivityEvent, MeetingDetail } from "@/lib/office/types";
 
 /** Transcript of a real meeting: every line is a persisted message produced by an agent's model call. */
 export function MeetingPanel({ meetingId, onClose, liveVersion }: { meetingId: string; onClose: () => void; liveVersion: number }) {
   const { t } = useApp();
+  const dir = useOfficeDirectory();
   const { data, reload } = useApi<{ meeting: MeetingDetail }>(`/api/office/meetings/${meetingId}`);
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { void reload(); }, [liveVersion, reload]);
@@ -27,7 +28,7 @@ export function MeetingPanel({ meetingId, onClose, liveVersion }: { meetingId: s
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               {m.status === "in_progress" ? <Badge tone="info"><span className="size-1.5 animate-soft-pulse rounded-full bg-current" />{t("office.meeting.live")}</Badge> : <StatusBadge status={m.status} />}
               {m.participants.map((p) => {
-                const pr = PROFILE_BY_SLUG.get(p);
+                const pr = dir.get(p);
                 return <span key={p} className="rounded-full px-2 py-0.5 text-[11.5px] font-medium text-white" style={{ background: pr?.color ?? "#64748b" }}>{pr?.nameAr ?? p}</span>;
               })}
             </div>
@@ -46,7 +47,7 @@ export function MeetingPanel({ meetingId, onClose, liveVersion }: { meetingId: s
             )}
             <ol className="space-y-3">
               {m.messages.map((msg) => {
-                const pr = PROFILE_BY_SLUG.get(msg.agent);
+                const pr = dir.get(msg.agent);
                 return (
                   <li key={msg.id} className="flex gap-2.5">
                     <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg text-[12px] font-semibold text-white" style={{ background: pr?.color ?? "#64748b" }}>{pr?.nameAr.slice(0, 1) ?? "?"}</span>
@@ -72,7 +73,7 @@ export function MeetingPanel({ meetingId, onClose, liveVersion }: { meetingId: s
               <div className="mt-4">
                 <p className="mb-1.5 flex items-center gap-1.5 text-[12px] font-semibold text-fg-2"><ListTodo className="size-3.5 text-accent" />{t("office.meeting.actions")}</p>
                 <ul className="space-y-1 text-[12.5px] text-fg-2">
-                  {m.actionItems.map((a, i) => <li key={i} dir="auto"><span className="font-semibold" style={{ color: PROFILE_BY_SLUG.get(a.owner)?.color }}>{PROFILE_BY_SLUG.get(a.owner)?.nameAr ?? a.owner}:</span> {a.item}</li>)}
+                  {m.actionItems.map((a, i) => <li key={i} dir="auto"><span className="font-semibold" style={{ color: dir.get(a.owner)?.color }}>{dir.get(a.owner)?.nameAr ?? a.owner}:</span> {a.item}</li>)}
                 </ul>
               </div>
             )}
@@ -91,13 +92,14 @@ export function MeetingPanel({ meetingId, onClose, liveVersion }: { meetingId: s
 
 export function ActivityFeed({ events, onSelectAgent, onOpenMeeting }: { events: ActivityEvent[]; onSelectAgent: (s: string) => void; onOpenMeeting: (id: string) => void }) {
   const { t, locale } = useApp();
+  const dir = useOfficeDirectory();
   const items = [...events].filter((e) => e.type !== "idle").reverse().slice(0, 40);
   if (!items.length) return <p className="px-4 py-6 text-center text-[12.5px] text-fg-3">{t("office.feed.empty")}</p>;
   return (
     <ul className="divide-y divide-border" aria-live="polite">
       {items.map((e) => {
-        const pr = PROFILE_BY_SLUG.get(e.agent);
-        const rel = e.relatedAgent ? PROFILE_BY_SLUG.get(e.relatedAgent) : undefined;
+        const pr = dir.get(e.agent);
+        const rel = e.relatedAgent ? dir.get(e.relatedAgent) : undefined;
         return (
           <li key={e.id} className="px-4 py-2.5">
             <p className="text-[12.5px] leading-snug text-fg-2">

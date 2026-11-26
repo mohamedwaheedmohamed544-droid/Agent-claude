@@ -3,7 +3,8 @@ import { query, queryOne, transaction } from "../db";
 import { audit } from "../audit";
 import { AppError } from "../errors";
 import { chat, chatJson } from "../ai/llm";
-import { getAgent, listAgents } from "../agents/store";
+import { getAgent } from "../agents/store";
+import { endRuntimeSession, startRuntimeSession } from "../agents/runtime";
 import { runAgentStep, type Checkpoint, type StepResult } from "../agents/runner";
 import { ApprovalRequiredError, EmergencyStopError } from "../tools/executor";
 import { getWorkspaceSettings } from "../settings";
@@ -13,7 +14,7 @@ import { truncateToTokens } from "../ai/models";
 import type { Plan } from "./planner";
 import { emitEvent, refreshPresence, sendAgentMessage } from "../office/events";
 import { runMeeting } from "../office/meetings";
-import { deskZoneOf } from "../office/profiles";
+import { zoneOf } from "../office/directory";
 
 export type TaskStatus = "draft" | "planned" | "running" | "waiting_approval" | "paused" | "completed" | "failed" | "cancelled";
 export type StepStatus = "pending" | "running" | "waiting_approval" | "completed" | "failed" | "skipped" | "cancelled";
@@ -169,13 +170,21 @@ async function runStep(task: TaskRow, step: StepRow, all: StepRow[]): Promise<vo
       return;
     }
     const agent = await getAgent(task.workspace_id, step.agent_slug);
-    if (!agent || !agent.active) throw new AppError(400, "agent_unavailable", `Agent ${step.agent_slug} is not available`);
+    if (!agent || !agent.runnable) throw new AppError(400, "agent_unavailable", `Agent ${step.agent_slug} is not available (archived or deleted)`);
     await announceDelegation(task, step);
-    const result = await runAgentStep(agent, {
-      workspaceId: task.workspace_id, userId: task.created_by, taskId: task.id, stepId: step.id, conversationId: task.conversation_id,
-      objective: task.objective, title: step.title, instruction: step.input, expectedOutput: step.expected_output,
-      dependencies: deps.map((d) => ({ key: d.step_key, agent: d.agent_slug, title: d.title, output: d.output ?? "" })),
-    }, step.checkpoint);
+    const sessionId = await startRuntimeSession(agent, task.id, step.id);
+    let result: Awaited<ReturnType<typeof runAgentStep>>;
+    try {
+      result = await runAgentStep(agent, {
+        workspaceId: task.workspace_id, userId: task.created_by, taskId: task.id, stepId: step.id, conversationId: task.conversation_id,
+        objective: task.objective, title: step.title, instruction: step.input, expectedOutput: step.expected_output,
+        dependencies: deps.map((d) => ({ key: d.step_key, agent: d.agent_slug, title: d.title, output: d.output ?? "" })),
+      }, step.checkpoint);
+      await endRuntimeSession(sessionId, "completed");
+    } catch (err) {
+      await endRuntimeSession(sessionId, err instanceof ApprovalRequiredError || err instanceof EmergencyStopError ? "interrupted" : "failed");
+      throw err;
+    }
     await query(
       `UPDATE task_steps SET status='completed', output=$2, output_meta=$3, error=NULL, completed_at=now(), updated_at=now() WHERE id=$1 AND status='running'`,
       [step.id, result.output, result.meta],
@@ -185,7 +194,7 @@ async function runStep(task: TaskRow, step: StepRow, all: StepRow[]): Promise<vo
   } catch (e) {
     if (e instanceof ApprovalRequiredError) {
       await query("UPDATE task_steps SET status='waiting_approval', updated_at=now() WHERE id=$1", [step.id]);
-      await emitEvent({ workspaceId: task.workspace_id, agent: step.agent_slug, type: "waiting_approval", taskId: task.id, stepId: step.id, zone: deskZoneOf(step.agent_slug), summary: `Waiting for approval: ${e.toolName}`, payload: { approvalId: e.approvalId, tool: e.toolName } });
+      await emitEvent({ workspaceId: task.workspace_id, agent: step.agent_slug, type: "waiting_approval", taskId: task.id, stepId: step.id, zone: await zoneOf(task.workspace_id, step.agent_slug), summary: `Waiting for approval: ${e.toolName}`, payload: { approvalId: e.approvalId, tool: e.toolName } });
       return;
     }
     if (e instanceof EmergencyStopError || (e instanceof AppError && e.code === "emergency_stop")) {
@@ -208,7 +217,7 @@ async function runStep(task: TaskRow, step: StepRow, all: StepRow[]): Promise<vo
       await audit({ workspaceId: task.workspace_id, actorType: "agent", actor: step.agent_slug, action: "step.failed", targetType: "task_step", targetId: step.id, metadata: { taskId: task.id, error: message } });
       const failedAgents = step.kind === "meeting" ? step.participants : [step.agent_slug];
       for (const a of failedAgents) {
-        await emitEvent({ workspaceId: task.workspace_id, agent: a, type: "step_failed", taskId: task.id, stepId: step.id, zone: deskZoneOf(a), summary: `${step.title}: ${message.slice(0, 200)}` }, { refresh: false });
+        await emitEvent({ workspaceId: task.workspace_id, agent: a, type: "step_failed", taskId: task.id, stepId: step.id, zone: await zoneOf(task.workspace_id, a), summary: `${step.title}: ${message.slice(0, 200)}` }, { refresh: false });
       }
       await refreshPresence(task.workspace_id).catch(() => {});
     }
@@ -227,8 +236,8 @@ async function announceDelegation(task: TaskRow, step: StepRow) {
       workspaceId: task.workspace_id, from: "orchestrator", to: step.agent_slug, kind: "delegation", taskId: task.id, stepId: step.id,
       content: `${step.title}\n${step.input}`,
     });
-    await emitEvent({ workspaceId: task.workspace_id, agent: "orchestrator", type: "delegated", relatedAgent: step.agent_slug, taskId: task.id, stepId: step.id, zone: deskZoneOf(step.agent_slug), summary: step.title, payload: { messageId } }, { refresh: false });
-    await emitEvent({ workspaceId: task.workspace_id, agent: step.agent_slug, type: "step_started", taskId: task.id, stepId: step.id, zone: deskZoneOf(step.agent_slug), summary: step.title });
+    await emitEvent({ workspaceId: task.workspace_id, agent: "orchestrator", type: "delegated", relatedAgent: step.agent_slug, taskId: task.id, stepId: step.id, zone: await zoneOf(task.workspace_id, step.agent_slug), summary: step.title, payload: { messageId } }, { refresh: false });
+    await emitEvent({ workspaceId: task.workspace_id, agent: step.agent_slug, type: "step_started", taskId: task.id, stepId: step.id, zone: await zoneOf(task.workspace_id, step.agent_slug), summary: step.title });
   } catch (e) {
     console.error("[office] delegation event failed:", (e as Error).message);
   }
@@ -252,7 +261,7 @@ async function announceCompletion(task: TaskRow, step: StepRow, all: StepRow[], 
     }
     const agents = step.kind === "meeting" ? step.participants : [sender];
     for (const a of agents) {
-      await emitEvent({ workspaceId: task.workspace_id, agent: a, type: "step_completed", taskId: task.id, stepId: step.id, zone: deskZoneOf(a), summary: step.title }, { refresh: false });
+      await emitEvent({ workspaceId: task.workspace_id, agent: a, type: "step_completed", taskId: task.id, stepId: step.id, zone: await zoneOf(task.workspace_id, a), summary: step.title }, { refresh: false });
     }
     await refreshPresence(task.workspace_id);
   } catch (e) {
@@ -415,13 +424,16 @@ export async function resumeStaleTasks(limit = 3, workspaceId?: string): Promise
 // ───────────────────────── Control actions ─────────────────────────
 
 export async function controlTask(workspaceId: string, taskId: string, action: "pause" | "resume" | "cancel" | "retry", userId: string): Promise<TaskStatus> {
-  const t = await queryOne<{ status: TaskStatus }>("SELECT status FROM tasks WHERE id=$1 AND workspace_id=$2", [taskId, workspaceId]);
+  const t = await queryOne<{ status: TaskStatus; locked: boolean }>(
+    "SELECT status, (locked_until IS NOT NULL AND locked_until > now()) AS locked FROM tasks WHERE id=$1 AND workspace_id=$2", [taskId, workspaceId],
+  );
   if (!t) throw new AppError(404, "not_found", "Task not found");
   const terminal = ["completed", "failed", "cancelled"].includes(t.status);
   let next: TaskStatus = t.status;
   if (action === "cancel") {
     if (terminal) throw new AppError(409, "conflict", `Task is already ${t.status}`);
-    if (t.status === "running" || t.status === "planned") {
+    if ((t.status === "running" || t.status === "planned") && t.locked) {
+      // A runner holds the task: ask it to stop at its next checkpoint.
       await query("UPDATE tasks SET cancel_requested=true, updated_at=now() WHERE id=$1", [taskId]);
       next = t.status;
     } else {
@@ -467,6 +479,3 @@ export async function onApprovalDecided(workspaceId: string, approvalId: string)
   await refreshPresence(workspaceId).catch(() => {});
 }
 
-export async function activeAgentSlugs(workspaceId: string): Promise<string[]> {
-  return (await listAgents(workspaceId)).filter((a) => a.active).map((a) => a.slug);
-}

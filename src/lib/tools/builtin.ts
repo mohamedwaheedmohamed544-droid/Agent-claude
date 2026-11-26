@@ -41,7 +41,9 @@ const memorySearch = defineTool({
   output: { memories: "Array<{ kind, scope, content }>" },
   requiredPermissions: ["memory:read"],
   handler: async (i, ctx) => {
-    const items = await searchMemory(ctx.workspaceId, ctx.userId, i.query, { limit: i.limit ?? 5, taskId: ctx.taskId });
+    const items = await searchMemory(ctx.workspaceId, ctx.userId, i.query, {
+      limit: i.limit ?? 5, taskId: ctx.taskId, agentSlug: ctx.agentSlug, includeOtherAgents: ctx.memoryAccess === "shared",
+    });
     return { memories: items.map((m) => ({ kind: m.kind, scope: m.scope, content: m.content })) };
   },
 });
@@ -331,7 +333,7 @@ const proposeMemory = defineTool({
   input: z.object({
     content: z.string().min(5).max(1000),
     kind: z.enum(["preference", "fact", "decision", "context", "workflow"]),
-    scope: z.enum(["user", "workspace"]),
+    scope: z.enum(["user", "workspace", "agent"]).describe("agent = your own private memory"),
   }),
   output: { id: "uuid", status: "proposed|active" },
   requiredPermissions: ["memory:write"],
@@ -339,7 +341,7 @@ const proposeMemory = defineTool({
     const settings = await getWorkspaceSettings(ctx.workspaceId);
     const m = await addMemory({
       workspaceId: ctx.workspaceId, scope: i.scope, kind: i.kind, content: i.content, source: "agent",
-      status: settings.autoApproveAgentMemories ? "active" : "proposed", userId: ctx.userId, importance: 0.5,
+      status: settings.autoApproveAgentMemories || i.scope === "agent" ? "active" : "proposed", userId: ctx.userId, importance: 0.5, agentSlug: ctx.agentSlug,
     });
     return { id: m.id, status: m.status };
   },

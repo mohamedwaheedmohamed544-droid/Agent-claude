@@ -2,7 +2,8 @@ import { query, queryOne } from "../db";
 import { badRequest, notFound } from "../errors";
 import { searchMemory } from "../memory/store";
 import { redactSecrets } from "../security/crypto";
-import { createTaskFromPlan, kickTask, activeAgentSlugs } from "./engine";
+import { createTaskFromPlan, kickTask } from "./engine";
+import { assignableAgents } from "../agents/store";
 import { planRequest, validatePlan, PlanValidationError, type Plan } from "./planner";
 
 export interface ChatInput {
@@ -65,10 +66,16 @@ export async function handleChatMessage(input: ChatInput): Promise<{ conversatio
     [conversationId, input.workspaceId, input.userId, redactSecrets(text), { attachments }],
   ))!;
 
-  const [memories, activeAgents] = await Promise.all([
+  const [memories, assignable] = await Promise.all([
     searchMemory(input.workspaceId, input.userId, text, { limit: 5 }).catch(() => []),
-    activeAgentSlugs(input.workspaceId),
+    assignableAgents(input.workspaceId),
   ]);
+  const activeAgents = assignable.map((a) => a.slug);
+  const meetingCapable = assignable.filter((a) => a.config.relationships.canJoinMeetings).map((a) => a.slug);
+  const roster = assignable.map((a) => ({
+    slug: a.slug, nameAr: a.nameAr, roleTitle: a.roleTitle, description: a.description, main: a.config.responsibilities.main,
+    skills: a.skills.map((s) => s.name), supervisor: a.config.relationships.supervisor, canJoinMeetings: a.config.relationships.canJoinMeetings,
+  }));
 
   const objective = attachments.length ? `${text}\n\n[Attached files: ${attachments.map((a) => `${a.filename} (id ${a.id})`).join(", ")}]` : text;
   let plan: Plan;
@@ -81,10 +88,10 @@ export async function handleChatMessage(input: ChatInput): Promise<{ conversatio
         steps: [input.meetingParticipants?.length
           ? { key: "meeting", kind: "meeting", agent: input.meetingParticipants[0], participants: input.meetingParticipants, title, instruction: objective, expected_output: "Decisions and action items", depends_on: [], condition: null }
           : { key: "assigned", kind: "agent", agent: input.targetAgent!, participants: [], title, instruction: objective, expected_output: "Completed assignment", depends_on: [], condition: null }],
-      }, activeAgents);
+      }, activeAgents, meetingCapable);
     } else plan = await planRequest({
       workspaceId: input.workspaceId, userId: input.userId, request: objective, history, attachments,
-      memoryContext: memories.map((m) => m.content), activeAgents, locale: input.locale,
+      memoryContext: memories.map((m) => m.content), roster, locale: input.locale,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
