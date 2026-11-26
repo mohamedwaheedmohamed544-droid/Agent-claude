@@ -79,7 +79,7 @@ export function NaturalLanguageDialog({ open, onClose }: { open: boolean; onClos
     try {
       const res = await api<{ agent: AgentRecord }>("/api/agents", { body: { config, lifecycle: "active" } });
       close();
-      router.push(`/agents/${res.agent.slug}?created=1`);
+      router.push(`/agents/${res.agent.slug}?created=active`);
     } catch (err) { setError((err as Error).message); setBusy(null); }
   };
 
@@ -282,7 +282,7 @@ export function ImportDialog({ open, onClose }: { open: boolean; onClose: () => 
     try {
       const res = await api<{ agent: AgentRecord }>("/api/agents/import", { body: { data: file.data, lifecycle } });
       close();
-      router.push(`/agents/${res.agent.slug}?created=1`);
+      router.push(`/agents/${res.agent.slug}?created=${lifecycle === "active" ? "active" : "draft"}`);
     } catch (err) { setError((err as Error).message); setBusy(false); }
   };
 

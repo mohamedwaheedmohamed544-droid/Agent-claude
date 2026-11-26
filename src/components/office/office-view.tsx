@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, Building2, ChevronDown, LayoutGrid, ListChecks, Users, Volume2, VolumeX } from "lucide-react";
 import { useApi, timeAgo } from "@/lib/client/hooks";
@@ -45,7 +46,8 @@ export function OfficeView() {
   const [view, setView] = useState<View>("office");
   const [filter, setFilter] = useState<Filter>("all");
   const [zone, setZone] = useState<OfficeZone>("executive");
-  const [selected, setSelected] = useState<string | null>(null);
+  const params = useSearchParams();
+  const [selected, setSelected] = useState<string | null>(() => params.get("agent"));
   const [meetingId, setMeetingId] = useState<string | null>(null);
   const [cameraMode, setCameraMode] = useState<"orbit" | "follow">("orbit");
   const [quality, setQuality] = useState<"auto" | "high" | "low">("auto");
@@ -122,8 +124,13 @@ export function OfficeView() {
           <Badge tone={connected ? "success" : "warning"} className="ms-auto sm:ms-0">
             <span className={cx("size-1.5 rounded-full bg-current", connected && "animate-soft-pulse")} />{connected ? t("office.live") : t("office.reconnecting")}
           </Badge>
+          {can("admin") && (
+            <Link href="/agents?tab=office" className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-[12.5px] font-medium text-fg-2 hover:bg-surface-2 sm:ms-auto">
+              {t("office.settingsLink")}
+            </Link>
+          )}
           {can("member") && (
-            <button onClick={() => setMeetingDialog({ open: true, initial: null })} className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white hover:bg-accent-hover sm:ms-auto">
+            <button onClick={() => setMeetingDialog({ open: true, initial: null })} className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white hover:bg-accent-hover">
               <Users className="size-3.5" />{t("office.meeting.title")}
             </button>
           )}

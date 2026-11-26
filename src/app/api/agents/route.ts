@@ -41,6 +41,7 @@ export const GET = workspaceRoute(async ({ req, workspaceId }) => {
       ...a,
       departmentName: dep.get(a.office.departmentKey)?.name ?? a.office.departmentKey,
       departmentNameAr: dep.get(a.office.departmentKey)?.nameAr ?? a.office.departmentKey,
+      departmentColor: dep.get(a.office.departmentKey)?.color ?? null,
       presence: pres.get(a.slug) ?? null,
       skillNames: a.skills.map((s) => sk.get(s.key)?.name ?? s.key),
       currentTask: cur.get(a.slug) ? { id: cur.get(a.slug)!.id, title: cur.get(a.slug)!.title } : null,

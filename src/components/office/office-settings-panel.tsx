@@ -71,8 +71,8 @@ export function OfficeSettingsPanel() {
             )}
             <p className="text-[12.5px] leading-relaxed text-fg-3">{t("agents.office.thresholds")}</p>
             <div className="grid gap-3 sm:grid-cols-2">
-              <AutoNumber label={t("agents.office.floors")} value={v.floors} min={1} max={10} onChange={(n) => set("floors", n)} autoLabel={t("agents.office.auto")} />
-              <AutoNumber label={t("agents.office.meetingRooms")} value={v.meetingRooms} min={1} max={12} onChange={(n) => set("meetingRooms", n)} autoLabel={t("agents.office.auto")} />
+              <AutoNumber label={t("agents.office.floors")} value={v.floors} min={1} max={10} onChange={(n) => set("floors", n)} autoLabel={t("agents.office.auto")} fixedLabel={t("agents.office.fixed")} />
+              <AutoNumber label={t("agents.office.meetingRooms")} value={v.meetingRooms} min={1} max={12} onChange={(n) => set("meetingRooms", n)} autoLabel={t("agents.office.auto")} fixedLabel={t("agents.office.fixed")} />
             </div>
           </section>
 
@@ -169,13 +169,13 @@ function ToggleRow({ label, hint, checked, onChange, disabled }: { label: string
   );
 }
 
-function AutoNumber({ label, value, min, max, onChange, autoLabel }: { label: string; value: number | null; min: number; max: number; onChange: (v: number | null) => void; autoLabel: string }) {
+function AutoNumber({ label, value, min, max, onChange, autoLabel, fixedLabel }: { label: string; value: number | null; min: number; max: number; onChange: (v: number | null) => void; autoLabel: string; fixedLabel: string }) {
   return (
     <Field label={label}>
       <div className="flex items-center gap-2">
         <Select value={value === null ? "auto" : "fixed"} onChange={(e) => onChange(e.target.value === "auto" ? null : (value ?? min))} aria-label={label} className="w-28">
           <option value="auto">{autoLabel}</option>
-          <option value="fixed">#</option>
+          <option value="fixed">{fixedLabel}</option>
         </Select>
         {value !== null && (
           <Input type="number" min={min} max={max} value={value} aria-label={label}

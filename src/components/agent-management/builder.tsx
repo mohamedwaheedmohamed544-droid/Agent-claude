@@ -189,9 +189,11 @@ export function AgentBuilder({ slug }: { slug?: string }) {
       setValidation(v);
       if (v.errors.length) { setSaveError(t("agents.builder.fixErrors")); goToFirstError(v.errors); setSaving(null); return; }
       if (editing && slug) {
-        await api(`/api/agents/${encodeURIComponent(slug)}`, { method: "PATCH", body: { config: c, changeNote: changeNote.trim() || undefined } });
+        if (dirty) await api(`/api/agents/${encodeURIComponent(slug)}`, { method: "PATCH", body: { config: c, changeNote: changeNote.trim() || undefined } });
         if (kind === "activate" && record?.lifecycle !== "active") {
-          await api(`/api/agents/${encodeURIComponent(slug)}/lifecycle`, { body: { action: record?.lifecycle === "archived" ? "restore" : "activate" } });
+          const path = `/api/agents/${encodeURIComponent(slug)}/lifecycle`;
+          if (record?.lifecycle === "archived") await api(path, { body: { action: "restore" } });
+          await api(path, { body: { action: "activate" } });
         }
         setInitial(JSON.stringify(c));
         router.push(`/agents/${slug}?saved=${kind === "activate" ? "active" : "1"}`);
@@ -232,7 +234,7 @@ export function AgentBuilder({ slug }: { slug?: string }) {
   const lc = record?.lifecycle;
 
   return (
-    <div className="pb-28">
+    <div>
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <Link href={slug ? `/agents/${slug}` : "/agents"} className="mb-2 inline-flex items-center gap-1 text-[13px] text-fg-3 hover:text-fg">
@@ -306,8 +308,8 @@ export function AgentBuilder({ slug }: { slug?: string }) {
       </div>
 
       {/* Sticky footer */}
-      <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-surface/95 backdrop-blur supports-[backdrop-filter]:bg-surface/80">
-        <div className="mx-auto flex max-w-[1400px] flex-col gap-2 px-4 py-3 sm:px-6 lg:flex-row lg:items-center lg:px-8">
+      <div className="sticky bottom-0 z-30 -mx-4 mt-6 border-t border-border bg-surface/95 backdrop-blur sm:-mx-6 lg:-mx-8 supports-[backdrop-filter]:bg-surface/85">
+        <div className="flex flex-col gap-2 px-4 py-3 sm:px-6 lg:flex-row lg:items-center lg:px-8">
           <div className="min-w-0 flex-1" aria-live="polite">
             {saveError ? <p className="truncate text-[13px] text-danger">{saveError}</p>
               : dirty ? <p className="text-[13px] text-fg-3">{t("agents.builder.unsaved")}</p>
