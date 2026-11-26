@@ -12,6 +12,7 @@ import { makeUser } from "./helpers";
 type Captured = { headers: http.IncomingHttpHeaders; body: Record<string, unknown> };
 const captured: Captured[] = [];
 let nextResponses: Array<{ blocks: Array<Record<string, unknown>>; stop: string; usage?: Record<string, unknown> }> = [];
+let nextError: { status: number; body: unknown } | null = null;
 let server: http.Server;
 const saved: Record<string, string | undefined> = {};
 
@@ -26,6 +27,11 @@ beforeAll(async () => {
     req.on("end", () => {
       const body = JSON.parse(raw || "{}");
       captured.push({ headers: req.headers, body });
+      if (nextError) {
+        res.writeHead(nextError.status, { "content-type": "application/json" });
+        res.end(JSON.stringify(nextError.body));
+        return;
+      }
       const next = nextResponses.shift() ?? { blocks: [{ type: "text", text: "ok" }], stop: "end_turn" };
       res.writeHead(200, { "content-type": "text/event-stream" });
       sse(res, "message_start", { message: { id: "msg_test", type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 1, cache_read_input_tokens: 50, cache_creation_input_tokens: 0, ...(next.usage ?? {}) } } });
@@ -135,6 +141,19 @@ describe("Claude provider (real SDK path, local fake API)", () => {
     expect(r.sources).toEqual([{ title: "Events Report", url: "https://example.org/report" }]);
     const tools = captured.at(-1)!.body.tools as Array<{ type: string }>;
     expect(tools[0].type).toBe("web_search_20260209");
+  });
+
+  it("an exhausted credit balance becomes a clear, non-retryable error (no fallback, no retries)", async () => {
+    const u = await makeUser();
+    nextError = { status: 400, body: { type: "error", error: { type: "invalid_request_error", message: "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits." } } };
+    const before = captured.length;
+    try {
+      await expect(chat({ system: "s", messages: [{ role: "user", content: "x" }], ctx: { workspaceId: u.workspaceId, purpose: "test" } }))
+        .rejects.toMatchObject({ code: "ai_credit_exhausted", status: 402, message: expect.stringContaining("Plans & Billing") });
+      expect(captured.length - before).toBe(1); // 400 is not retried by the SDK or our fallback
+    } finally {
+      nextError = null;
+    }
   });
 
   it("without a Voyage key, embeddings are reported unavailable (keyword search is used)", async () => {

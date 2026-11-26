@@ -124,7 +124,10 @@ async function loadSteps(taskId: string): Promise<StepRow[]> {
 // ───────────────────────── Execution ─────────────────────────
 
 function isRecoverable(e: unknown): boolean {
-  if (e instanceof AppError) return [429, 500, 502, 503, 504].includes(e.status) && e.code !== "budget_exceeded";
+  if (e instanceof AppError) {
+    if (["budget_exceeded", "ai_credit_exhausted", "ai_auth_error", "ai_permission_error"].includes(e.code)) return false;
+    return [429, 500, 502, 503, 504].includes(e.status);
+  }
   const msg = e instanceof Error ? e.message : "";
   return /timed out|timeout|ECONNRESET|ETIMEDOUT|fetch failed|socket|rate limit|empty result|mock: simulated/i.test(msg);
 }

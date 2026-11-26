@@ -39,6 +39,9 @@ export function MeetingPanel({ meetingId, onClose, liveVersion }: { meetingId: s
       <div className="flex-1 overflow-y-auto px-5 py-4">
         {!m ? <Spinner /> : (
           <>
+            {m.status === "failed" && m.error && (
+              <div className="mb-4 rounded-xl border border-danger/30 bg-danger-soft px-3.5 py-3 text-[12.5px] text-danger" role="alert" dir="auto">{m.error}</div>
+            )}
             {m.agenda.length > 0 && (
               <div className="mb-4 rounded-xl bg-surface-2 px-3.5 py-3">
                 <p className="text-[11.5px] font-semibold text-fg-3">{t("office.meeting.agenda")}</p>

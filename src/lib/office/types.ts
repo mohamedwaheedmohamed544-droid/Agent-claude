@@ -179,6 +179,8 @@ export interface MeetingMessage {
 }
 
 export interface MeetingDetail extends MeetingSummary {
+  /** Why the meeting failed (safe message from the task step), if it did. */
+  error: string | null;
   agenda: string[];
   summary: string | null;
   decisions: string[];

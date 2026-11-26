@@ -195,8 +195,9 @@ export async function listMeetings(workspaceId: string, opts: { agent?: string; 
 
 export async function getMeeting(workspaceId: string, id: string): Promise<MeetingDetail | null> {
   if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
-  const m = await queryOne<MeetingSummary & { agenda: string[]; summary: string | null; decisions: string[]; actionItems: Array<{ owner: string; item: string }> }>(
-    `SELECT ${SUMMARY_COLS}, m.agenda, m.summary, m.decisions, m.action_items AS "actionItems" FROM meetings m LEFT JOIN tasks t ON t.id=m.task_id
+  const m = await queryOne<MeetingSummary & { error: string | null; agenda: string[]; summary: string | null; decisions: string[]; actionItems: Array<{ owner: string; item: string }> }>(
+    `SELECT ${SUMMARY_COLS}, m.agenda, m.summary, m.decisions, m.action_items AS "actionItems",
+            (SELECT s.error->>'message' FROM task_steps s WHERE s.id=m.step_id) AS error FROM meetings m LEFT JOIN tasks t ON t.id=m.task_id
       WHERE m.workspace_id=$1 AND m.id=$2`, [workspaceId, id],
   );
   if (!m) return null;

@@ -97,6 +97,25 @@ async function enforceBudget(workspaceId: string, limitUsd: number) {
   }
 }
 
+/**
+ * Account-level problems that no retry or fallback model can fix. Mapped to clear, non-retryable
+ * errors so tasks fail fast with an actionable message instead of retrying with backoff.
+ */
+export function accountError(e: unknown): AppError | null {
+  if (e instanceof Anthropic.AuthenticationError) {
+    return new AppError(503, "ai_auth_error", "The Anthropic API key was rejected. Check ANTHROPIC_API_KEY in the deployment settings.");
+  }
+  if (e instanceof Anthropic.PermissionDeniedError) {
+    return new AppError(503, "ai_permission_error", "The Anthropic API key is not allowed to use this model or feature. Check the key's workspace permissions.");
+  }
+  const msg = e instanceof Error ? e.message : String(e);
+  if (/credit balance is too low|purchase credits|billing/i.test(msg)) {
+    return new AppError(402, "ai_credit_exhausted",
+      "The Anthropic account has run out of API credits. Add credits at console.anthropic.com → Plans & Billing, then retry the task.");
+  }
+  return null;
+}
+
 /** Errors where retrying on the configured fallback model may help (after the SDK's own retries). */
 function isFallbackable(e: unknown): boolean {
   if (e instanceof Anthropic.NotFoundError || e instanceof Anthropic.RateLimitError || e instanceof Anthropic.InternalServerError) return true;
@@ -190,15 +209,17 @@ export async function chat(req: ChatRequest): Promise<ChatResult> {
         usedFallback: i > 0,
       };
     } catch (e) {
-      lastErr = e;
-      if (e instanceof AppError) break;
+      lastErr = accountError(e) ?? e;
+      if (lastErr instanceof AppError) {
+        if (!(e instanceof AppError)) await recordUsage(req.ctx, model, 0, 0, Date.now() - started, false, (lastErr as AppError).message);
+        break;
+      }
       await recordUsage(req.ctx, model, 0, 0, Date.now() - started, false, e instanceof Error ? e.message : String(e));
       if (!isFallbackable(e) || i === candidates.length - 1) break;
       console.warn(`[llm] model ${model} failed, trying fallback model`);
     }
   }
   if (lastErr instanceof AppError) throw lastErr;
-  if (lastErr instanceof Anthropic.AuthenticationError) throw new AppError(503, "ai_auth_error", "The Anthropic API key was rejected. Check ANTHROPIC_API_KEY.");
   const msg = lastErr instanceof Error ? lastErr.message : String(lastErr);
   throw new AppError(502, "ai_provider_error", `AI provider error: ${redactSecrets(msg).slice(0, 300)}`);
 }
@@ -308,6 +329,8 @@ export async function webSearch(q: string, ctx: CallContext): Promise<WebSearchR
   } catch (e) {
     if (e instanceof AppError) throw e;
     await recordUsage(ctx, model, totals.prompt, totals.output, Date.now() - started, false, e instanceof Error ? e.message : String(e), totals.cost);
+    const acct = accountError(e);
+    if (acct) throw acct;
     throw new AppError(502, "web_search_error", `Web search failed: ${redactSecrets(e instanceof Error ? e.message : String(e)).slice(0, 200)}`);
   }
 }
