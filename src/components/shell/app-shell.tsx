@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   Activity, BarChart3, Bot, BookOpen, Brain, Check, ChevronDown, FolderOpen, Languages, LayoutDashboard, ListChecks, LogOut,
-  Menu, MessageSquare, Monitor, Moon, OctagonX, Plug, Plus, Settings, ShieldCheck, Sun, X,
+  Building2, Menu, MessageSquare, Monitor, Moon, OctagonX, Plug, Plus, Settings, ShieldCheck, Sun, X,
 } from "lucide-react";
 import { api } from "@/lib/client/api";
 import { useApi } from "@/lib/client/hooks";
@@ -16,6 +16,7 @@ const NAV = [
   { section: "nav.section.work", items: [
     { href: "/", key: "nav.dashboard", icon: LayoutDashboard },
     { href: "/chat", key: "nav.chat", icon: MessageSquare },
+    { href: "/office", key: "nav.office", icon: Building2 },
     { href: "/tasks", key: "nav.tasks", icon: ListChecks },
     { href: "/approvals", key: "nav.approvals", icon: ShieldCheck, badge: "approvals" as const },
     { href: "/agents", key: "nav.agents", icon: Bot },

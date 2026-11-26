@@ -19,6 +19,7 @@ export default defineConfig({
     { name: "api", testMatch: /api\.spec\.ts/ },
     { name: "desktop", testMatch: /ui\.spec\.ts/, use: { ...devices["Desktop Chrome"] } },
     { name: "mobile", testMatch: /mobile\.spec\.ts/, use: { ...devices["Pixel 7"] } },
+    { name: "office", testMatch: /office\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } } },
   ],
   webServer: {
     command: `npx tsx e2e/prepare-db.ts && npx next start -p ${PORT}`,
@@ -35,6 +36,7 @@ export default defineConfig({
       CRON_SECRET: "e2e-cron-secret",
       NEXUS_TASK_BUDGET_MS: "60000",
       NEXUS_RATE_LIMIT_SCALE: "50",
+      NEXUS_MOCK_DELAY_MS: "900",
     },
   },
 });
