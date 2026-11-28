@@ -2,6 +2,9 @@ import { test, expect, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { PASSWORD } from "./helpers";
 
+/** Documentation screenshots are only refreshed on request: UPDATE_SCREENSHOTS=1 npm run test:e2e */
+const shot = (page: Page, name: string) => (process.env.UPDATE_SCREENSHOTS ? page.screenshot({ path: `docs/screenshots/${name}.png`, fullPage: true }) : Promise.resolve());
+
 /**
  * Phase 1 exit criterion: a new customer registers, describes the business, reviews a recommended
  * workforce, edits and approves it, and receives a configured workspace with a live office.
@@ -104,7 +107,7 @@ test("register → onboarding → proposal → edit → approve → configured w
   await expect(page.locator('[data-approval="customer_rule"]')).toContainText("Never contact a government client directly");
   await expect(page.getByText(/Your answers point to a Marketing Strategist/)).toBeVisible(); // open question, not an agent
   await expect(page.locator('[data-agent="marketing_strategist"]')).toHaveCount(0);
-  await page.screenshot({ path: "docs/screenshots/onboarding-proposal.png", fullPage: true });
+  await shot(page, "onboarding-proposal");
 
   // Customer edits: remove an agent, add one, edit responsibilities.
   await page.locator('[data-agent="bd_specialist"]').getByRole("button", { name: /Remove/ }).click();
@@ -131,7 +134,7 @@ test("register → onboarding → proposal → edit → approve → configured w
 
   await expect(page.getByRole("heading", { name: "Your digital workforce is ready" })).toBeVisible({ timeout: 60_000 });
   await expect(page.getByRole("button", { name: "Microsoft 365" })).toBeVisible();
-  await page.screenshot({ path: "docs/screenshots/onboarding-done.png", fullPage: true });
+  await shot(page, "onboarding-done");
 
   // The workforce is real: agents, departments and approval policy via the API.
   const agents = await (await page.request.get("/api/agents")).json();
