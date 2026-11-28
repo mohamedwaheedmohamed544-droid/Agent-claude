@@ -64,6 +64,18 @@ Register OAuth apps and add these redirect URIs:
 
 Then set `GOOGLE_CLIENT_ID/SECRET`, `MICROSOFT_CLIENT_ID/SECRET` (and optionally `MICROSOFT_TENANT_ID`) and connect from **Integrations**.
 
+### Removing all accounts
+
+`scripts/reset-accounts.ts` deletes **every user and all workspace data** (keeps the schema and built-in catalogue).
+It is a dry run unless given the exact confirmation phrase, and runs in one transaction:
+
+```bash
+DATABASE_URL="<production url>" npx tsx scripts/reset-accounts.ts                                  # counts only
+DATABASE_URL="<production url>" npx tsx scripts/reset-accounts.ts --confirm "DELETE ALL ACCOUNTS"  # delete
+```
+
+It cannot be undone except through a Neon point-in-time restore. The next sign-up becomes the platform admin.
+
 ## Testing
 
 ```bash
