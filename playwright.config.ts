@@ -17,6 +17,7 @@ export default defineConfig({
   use: { baseURL: `http://localhost:${PORT}`, trace: "off", screenshot: "only-on-failure" },
   projects: [
     { name: "api", testMatch: /api\.spec\.ts/ },
+    { name: "tenancy", testMatch: /tenancy\.spec\.ts/ },
     { name: "desktop", testMatch: /ui\.spec\.ts/, use: { ...devices["Desktop Chrome"] } },
     { name: "mobile", testMatch: /mobile\.spec\.ts/, use: { ...devices["Pixel 7"] } },
     { name: "agents", testMatch: /agents\.spec\.ts/, use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } } },
