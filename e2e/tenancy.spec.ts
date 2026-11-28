@@ -97,11 +97,13 @@ test.describe("Tenant isolation (release gate)", () => {
     // ── Forged workspace selection ──
     const forged = { headers: { "x-nexus-workspace": id.workspace } };
     for (const path of ["/api/tasks", "/api/conversations", "/api/approvals", "/api/memory", "/api/files", "/api/knowledge/bases",
-      "/api/agents", "/api/departments", "/api/skills", "/api/audit", "/api/analytics?days=7", "/api/office/state", "/api/settings", "/api/integrations", "/api/workspaces/members"]) {
+      "/api/agents", "/api/departments", "/api/skills", "/api/audit", "/api/analytics?days=7", "/api/office/state", "/api/settings", "/api/integrations", "/api/workspaces/members", "/api/onboarding"]) {
       expect((await b.get(path, forged)).status(), path).toBe(403);
     }
     expect((await b.post("/api/chat", { ...forged, data: { message: "hello" } })).status()).toBe(403);
     expect((await b.post("/api/settings/emergency-stop", { ...forged, data: { active: true } })).status()).toBe(403);
+    expect((await b.put("/api/onboarding", { ...forged, data: { step: "identity", data: {} } })).status()).toBe(403);
+    expect((await b.post("/api/onboarding/proposal", { ...forged, data: {} })).status()).toBe(403);
     expect((await b.post("/api/workspaces/members", { ...forged, data: { email: "x@example.com", role: "admin" } })).status()).toBe(403);
     // The workspace cookie cannot be used to switch into a foreign workspace either.
     const ws = await b.put("/api/workspaces", { data: { workspaceId: id.workspace } });

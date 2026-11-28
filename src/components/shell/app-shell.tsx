@@ -5,7 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   Activity, BarChart3, Bot, BookOpen, Brain, Check, ChevronDown, FolderOpen, Languages, LayoutDashboard, ListChecks, LogOut,
-  Building2, Menu, MessageSquare, Monitor, Moon, OctagonX, Plug, Plus, Settings, ShieldCheck, Sun, X,
+  Building2, Menu, MessageSquare, Monitor, Moon, OctagonX, Plug, Plus, Settings, ShieldCheck, Sparkles, Sun, X,
 } from "lucide-react";
 import { api } from "@/lib/client/api";
 import { useApi } from "@/lib/client/hooks";
@@ -27,6 +27,7 @@ const NAV = [
     { href: "/memory", key: "nav.memory", icon: Brain },
   ] },
   { section: "nav.section.control", items: [
+    { href: "/onboarding", key: "nav.onboarding", icon: Sparkles },
     { href: "/integrations", key: "nav.integrations", icon: Plug },
     { href: "/analytics", key: "nav.analytics", icon: BarChart3 },
     { href: "/activity", key: "nav.activity", icon: Activity },

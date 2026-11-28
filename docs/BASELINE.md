@@ -91,7 +91,7 @@ Legend: ✅ exists · 🟡 partial · ❌ missing
 
 | Blueprint area | Status | Notes |
 |---|---|---|
-| §5 Intelligent onboarding, Company Operating Profile, Workforce Blueprint, approval, generation | ❌ | New workspaces receive a fixed 8-agent starter workforce. **Phase 1 target.** |
+| §5 Intelligent onboarding, Company Operating Profile, Workforce Blueprint, approval, generation | ✅ | Built in Phase 1 — see `docs/ONBOARDING.md`. Proposals use a deterministic rules engine (no AI call needed). |
 | §6.1 Workforce Studio | 🟡 | Builder, versions, lifecycle, departments, supervisors exist. Suspension = deactivate. Per-agent model *provider* policy is missing. |
 | §6.2 Workflow Studio | ❌ | The durable engine is a sound base; there are no stored workflow definitions, triggers or schedules, and no visual designer. |
 | §6.3 Skills system | 🟡 | Skills are instruction text + required tools + dependencies. Missing: I/O schemas, execution logic, validation, versioning, test-before-publish, metrics. |
@@ -170,7 +170,7 @@ Rules:
 | Priority | Item | Phase | Status |
 |---|---|---|---|
 | P0 | Cross-tenant release-gate tests | 0 | ✅ Done (`e2e/tenancy.spec.ts`) |
-| P0 | Onboarding records sensitive data categories and human-controlled tasks; generated agents get least-privilege ceilings and approval points from them | 1 | In progress |
+| P0 | Onboarding records sensitive data categories and human-controlled tasks; generated agents get least-privilege ceilings and approval points from them | 1 | ✅ Done |
 | P1 | PostgreSQL RLS as defence-in-depth (`SET LOCAL app.workspace_id` per transaction; policies on all tenant tables) | 4 | Planned. Needs a query-layer refactor so every query runs in a tenant-bound transaction |
 | P1 | Invitations with acceptance; neutral responses to stop account enumeration | 4 | Planned |
 | P1 | Password reset + email verification (needs a transactional email provider: **business decision**) | 4 | Blocked on provider choice |

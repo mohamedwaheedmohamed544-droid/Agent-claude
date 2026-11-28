@@ -17,6 +17,7 @@ import { ProgressBar } from "@/components/tasks/execution";
 import { AgentStack } from "@/components/tasks/task-list";
 import type { Approval, TaskArtifact, TaskListResponse } from "@/components/tasks/types";
 import { formatCost, formatNumber } from "@/components/tasks/utils";
+import { OnboardingCard } from "@/components/onboarding/onboarding-view";
 
 interface AgentRow {
   slug: string; name: string; nameAr: string | null; description: string; active: boolean;
@@ -129,6 +130,7 @@ export function Dashboard() {
   return (
     <div>
       <Greeting />
+      <OnboardingCard />
       <AskNexus />
 
       <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-4">

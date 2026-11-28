@@ -12,11 +12,12 @@ import { activity } from "./messages/activity";
 import { analytics } from "./messages/analytics";
 import { settings } from "./messages/settings";
 import { office } from "./messages/office";
+import { onboarding } from "./messages/onboarding";
 
 export type Locale = "en" | "ar";
 export const LOCALES: Locale[] = ["en", "ar"];
 
-const NAMESPACES = [common, dashboard, chat, agents, tasks, approvals, knowledge, files, integrations, memory, activity, analytics, settings, office];
+const NAMESPACES = [common, dashboard, chat, agents, tasks, approvals, knowledge, files, integrations, memory, activity, analytics, settings, office, onboarding];
 
 const DICTS: Record<Locale, Record<string, string>> = {
   en: Object.assign({}, ...NAMESPACES.map((n) => n.en)),

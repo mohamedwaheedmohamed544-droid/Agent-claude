@@ -11,7 +11,9 @@ async function signupViaUi(page: Page) {
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Create account" }).click();
-  await page.waitForURL((u) => u.pathname === "/");
+  // New accounts land on guided onboarding; these tests exercise the rest of the app.
+  await page.waitForURL((u) => u.pathname === "/onboarding");
+  await page.goto("/");
   return email;
 }
 

@@ -24,7 +24,8 @@ export function AuthForm({ mode }: { mode: "login" | "signup" }) {
       if (mode === "login") await api("/api/auth/login", { body: { email: form.email, password: form.password } });
       else await api("/api/auth/signup", { body: { name: form.name, email: form.email, password: form.password, locale, workspaceName: form.workspaceName || undefined } });
       const next = params.get("next");
-      window.location.href = next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
+      // New accounts go straight to guided company onboarding (Blueprint §4: Register → Understand the Company → …).
+      window.location.href = next && next.startsWith("/") && !next.startsWith("//") ? next : mode === "signup" ? "/onboarding" : "/";
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);
